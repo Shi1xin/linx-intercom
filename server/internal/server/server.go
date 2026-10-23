@@ -544,9 +544,12 @@ func (s *ControlServer) onConfirm(ctx context.Context, sess *Session, m *InMessa
 	s.broadcastPeerChange(roomID, "peer_joined", sess.deviceID)
 	sess.send(&OutMessage{Type: "confirm_result", RequestID: m.RequestID, OK: true,
 		Room: s.roomInfo(ctx, room)})
-	// apply persisted mute on janus
-	if sess.muted {
-		_ = s.media.SetMuted(context.Background(), p, true)
+	// restore persisted mute setting on janus (participants join muted)
+	sess.mu.Lock()
+	muted := sess.muted
+	sess.mu.Unlock()
+	if err := s.media.SetMuted(context.Background(), p, muted); err != nil {
+		log.Printf("device %s: restore mute %v: %v", sess.deviceID, muted, err)
 	}
 }
 
