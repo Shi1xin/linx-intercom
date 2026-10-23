@@ -179,7 +179,10 @@ static void dispatch_message(cJSON *root)
 
     if (strcmp(t, "hello_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
-        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
         cJSON *resume = cJSON_GetObjectItem(root, "resume_room");
         const char *rname = NULL, *rcode = NULL;
         if (cJSON_IsObject(resume)) {
@@ -245,7 +248,10 @@ static void dispatch_message(cJSON *root)
                      cJSON_IsNumber(cnt) ? cnt->valueint : 0, cJSON_IsTrue(ok));
     } else if (strcmp(t, "mute_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
-        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
         app_post(APP_EV_MUTE_RESULT, NULL, NULL,
                  cJSON_IsTrue(muted), cJSON_IsTrue(ok));
     } else if (strcmp(t, "leave_result") == 0) {
@@ -280,7 +286,10 @@ static void dispatch_message(cJSON *root)
         cJSON *opid = cJSON_GetObjectItem(root, "op_id");
         cJSON *op = cJSON_GetObjectItem(root, "op");
         cJSON *arg = cJSON_GetObjectItem(root, "op_arg");
-        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
         if (!cJSON_IsString(opid) || !cJSON_IsString(op)) {
             return;
         }

@@ -59,7 +59,7 @@ type ctrlMsg struct {
 	OpID    string `json:"op_id,omitempty"`
 	Op      string `json:"op,omitempty"`
 	OpArg   string `json:"op_arg,omitempty"`
-	OpMute  *bool  `json:"op_muted,omitempty"`
+	OpMute  *bool  `json:"mute,omitempty"`
 	Mode    string `json:"mode,omitempty"`
 	Message string `json:"message,omitempty"`
 }

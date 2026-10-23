@@ -69,7 +69,7 @@ type OutMessage struct {
 	OpID   string `json:"op_id,omitempty"`
 	Op     string `json:"op,omitempty"`     // join | switch | status | set_mute | leave
 	OpArg  string `json:"op_arg,omitempty"` // invite code | room name
-	OpMute *bool  `json:"muted,omitempty"`  // set_mute arg
+	OpMute *bool  `json:"mute,omitempty"`   // set_mute arg
 }
 
 type OutError struct {
