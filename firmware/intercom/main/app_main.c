@@ -265,14 +265,44 @@ static void on_confirm_result(app_event_t *ev)
     }
 }
 
+static TickType_t s_cmd_press_tick;
+static TickType_t s_last_tap_tick;
+
+static void on_cmd_press(void)
+{
+    s_cmd_press_tick = xTaskGetTickCount();
+    if (s_state == APP_STATE_TALKING) {
+        s_state_before_cmd = s_state;
+        set_state(APP_STATE_COMMAND);
+        s_command_active = true;
+        cmd_capture_begin();
+    }
+}
+
 static void on_cmd_release(void)
 {
+    TickType_t held = xTaskGetTickCount() - s_cmd_press_tick;
     if (!s_command_active) {
         return;
     }
     s_command_active = false;
-    int samples = cmd_capture_finish();
     set_state(s_state_before_cmd);
+    if (held < pdMS_TO_TICKS(500)) {
+        cmd_capture_abort();
+        TickType_t now = xTaskGetTickCount();
+        if (s_last_tap_tick && now - s_last_tap_tick < pdMS_TO_TICKS(700)) {
+            s_last_tap_tick = 0;
+            ESP_LOGI(TAG, "double-tap: mute toggle");
+            if (ctrl_client_is_connected()) {
+                ctrl_send_set_mute(!s_muted);
+            }
+        } else {
+            s_last_tap_tick = now;
+            ESP_LOGI(TAG, "cmd tap (hold to speak, double-tap to mute)");
+        }
+        return;
+    }
+    int samples = cmd_capture_finish();
     if (samples <= 0) {
         ESP_LOGI(TAG, "command too short, ignored");
         return;
@@ -340,14 +370,7 @@ static void app_task(void *arg)
             if (ev.msg) ctrl_send_ice_candidate(ev.msg);
             break;
         case APP_EV_PEER_STATE:        on_peer_state(&ev); break;
-        case APP_EV_CMD_PRESS:
-            if (s_state == APP_STATE_TALKING) {
-                s_state_before_cmd = s_state;
-                set_state(APP_STATE_COMMAND);
-                s_command_active = true;
-                cmd_capture_begin();
-            }
-            break;
+        case APP_EV_CMD_PRESS:            on_cmd_press(); break;
         case APP_EV_CMD_RELEASE:       on_cmd_release(); break;
         case APP_EV_TOUCH_TAP:
             if (ctrl_client_is_connected()) {

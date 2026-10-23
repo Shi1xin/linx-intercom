@@ -8,8 +8,8 @@
 
 #define TAG "cmd_input"
 
-#define POLL_MS       20
-#define DEBOUNCE_CNT  3    /* 60 ms */
+#define POLL_MS       10
+#define DEBOUNCE_CNT  3    /* 30 ms */
 
 typedef struct {
     gpio_num_t   pin;
@@ -44,6 +44,7 @@ static void poll_task(void *arg)
                 int prev = b->stable;
                 b->stable = lvl;
                 bool pressed = (lvl == 0);
+                ESP_LOGI(TAG, "btn gpio%d %s", (int)b->pin, pressed ? "down" : "up");
                 if (pressed && b->press_ev) {
                     app_post(b->press_ev, NULL, NULL, 0, false);
                 } else if (!pressed && prev == 0 && b->release_ev) {
