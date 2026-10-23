@@ -12,6 +12,13 @@ type InMessage struct {
 	Candidate *IceCandidate   `json:"candidate,omitempty"`
 	Completed bool            `json:"completed,omitempty"`
 	Muted     *bool           `json:"muted,omitempty"`
+	// op_result from device (reply to server-initiated op)
+	OpID      string          `json:"op_id,omitempty"`
+	OK        bool            `json:"ok,omitempty"`
+	Mode      string          `json:"mode,omitempty"`
+	Room      *RoomInfo       `json:"room,omitempty"`
+	OKMsg     string          `json:"message,omitempty"`
+	Error     *OutError       `json:"error,omitempty"`
 }
 
 type JoinTarget struct {
@@ -55,6 +62,14 @@ type OutMessage struct {
 	Event       string      `json:"event,omitempty"`
 	DeviceID    string      `json:"device_id,omitempty"`
 	Error       *OutError   `json:"error,omitempty"`
+
+	/* server-initiated device op (cloud MCP / admin): device executes through
+	 * the same room-operation path as its local entries, then replies
+	 * op_result with the same op_id */
+	OpID   string `json:"op_id,omitempty"`
+	Op     string `json:"op,omitempty"`     // join | switch | status | set_mute | leave
+	OpArg  string `json:"op_arg,omitempty"` // invite code | room name
+	OpMute *bool  `json:"muted,omitempty"`  // set_mute arg
 }
 
 type OutError struct {

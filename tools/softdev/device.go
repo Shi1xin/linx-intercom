@@ -4,6 +4,7 @@ package main
 // cloud-dispatched ops all funnel through execOp against the control channel.
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -85,6 +86,58 @@ func (d *softDevice) onNotify(event, peerID string) {
 	case "summon":
 		// a peer device tagged us; join its room by invite code
 	}
+}
+
+// handleOp runs a server-initiated op (cloud MCP / admin) through the same
+// executor, then replies op_result. Runs async so the ctrl readLoop keeps
+// flowing; execOp serializes concurrent ops itself.
+func (d *softDevice) handleOp(m ctrlMsg) {
+	go func() {
+		var tool string
+		var args map[string]any
+		switch m.Op {
+		case "join":
+			tool = "self.intercom.join"
+			args = map[string]any{"invite_code": m.OpArg}
+		case "switch":
+			tool = "self.intercom.switch"
+			args = map[string]any{"room_name": m.OpArg}
+		case "status":
+			tool = "self.intercom.status"
+		case "set_mute":
+			tool = "self.intercom.set_mute"
+			args = map[string]any{"muted": m.OpMute != nil && *m.OpMute}
+		case "leave":
+			tool = "self.intercom.leave"
+		default:
+			d.ctrl.send(ctrlMsg{Type: "op_result", OpID: m.OpID,
+				Error: &ctrlErr{Code: "bad_request", Message: "unknown op " + m.Op}})
+			return
+		}
+		res, err := d.execOp(tool, args)
+		reply := ctrlMsg{Type: "op_result", OpID: m.OpID}
+		if err != nil {
+			reply.Error = &ctrlErr{Code: "exec_failed", Message: err.Error()}
+		} else {
+			reply.OK = true
+			reply.Mode, _ = res["mode"].(string)
+			if r, ok := res["room"].(string); ok && r != "" {
+				reply.Room = &RoomInfo{Name: r}
+				if c, ok := res["invite_code"].(string); ok {
+					reply.Room.InviteCode = c
+				}
+				if n, ok := res["online_count"].(float64); ok {
+					reply.Room.OnlineCount = int(n)
+				}
+			}
+			if m2, ok := res["muted"].(bool); ok {
+				reply.Muted = &m2
+			}
+			out, _ := json.Marshal(res)
+			reply.Message = string(out)
+		}
+		d.ctrl.send(reply)
+	}()
 }
 
 // execOp runs one tool call. Returns the JSON-able result payload.

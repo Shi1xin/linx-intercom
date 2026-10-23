@@ -71,7 +71,8 @@ static int  s_rejoin_count;
 /* pending MCP call: reply is sent when the underlying room op resolves */
 static struct {
     bool active;
-    char id[64];      /* raw json of rpc id */
+    bool from_ctrl;   /* reply goes over the control channel (op_result) */
+    char id[64];      /* raw json id (linx) or bare op_id (ctrl) */
     char name[40];    /* tool name */
 } s_mcp_op;
 
@@ -223,7 +224,11 @@ static void mcp_op_finish(bool ok, const char *result_json)
         return;
     }
     ESP_LOGI(TAG, "mcp %s -> %s", s_mcp_op.name, ok ? "ok" : "fail");
-    linx_mcp_reply_result(s_mcp_op.id, result_json, !ok);
+    if (s_mcp_op.from_ctrl) {
+        ctrl_send_op_result(s_mcp_op.id, ok, result_json);
+    } else {
+        linx_mcp_reply_result(s_mcp_op.id, result_json, !ok);
+    }
     s_mcp_op.active = false;
     mcp_op_cancel_timer();
     open_tts_window();  /* the agent's ack reply may still legitimately play */
@@ -538,6 +543,17 @@ static void on_notify(app_event_t *ev)
 
 /* ---------- MCP call dispatch ---------- */
 
+/* immediate reply honoring the call's transport (linx mcp vs ctrl op) */
+static void mcp_reply_now(const char *id_raw, bool from_ctrl,
+                          const char *result_json, bool is_error)
+{
+    if (from_ctrl) {
+        ctrl_send_op_result(id_raw, !is_error, result_json);
+    } else {
+        linx_mcp_reply_result(id_raw, result_json, is_error);
+    }
+}
+
 static void on_mcp_call(app_event_t *ev)
 {
     cJSON *call = cJSON_Parse(ev->msg ? ev->msg : "");
@@ -547,22 +563,29 @@ static void on_mcp_call(app_event_t *ev)
     cJSON *id = cJSON_GetObjectItem(call, "id");
     cJSON *name = cJSON_GetObjectItem(call, "name");
     cJSON *args = cJSON_GetObjectItem(call, "arguments");
-    char *id_raw = id ? cJSON_PrintUnformatted(id) : strdup("null");
+    bool from_ctrl = cJSON_IsTrue(cJSON_GetObjectItem(call, "ctrl"));
+    char *id_raw;
+    if (from_ctrl && cJSON_IsString(id)) {
+        id_raw = strdup(id->valuestring);          /* bare op_id */
+    } else {
+        id_raw = id ? cJSON_PrintUnformatted(id) : strdup("null");
+    }
     const char *tool = cJSON_IsString(name) ? name->valuestring : "";
 
-    ESP_LOGI(TAG, "mcp call %s id=%s", tool, id_raw);
+    ESP_LOGI(TAG, "mcp call %s id=%s%s", tool, id_raw, from_ctrl ? " (ctrl)" : "");
     if (s_mcp_op.active) {
-        linx_mcp_reply_result(id_raw, "{\"ok\":false,\"error\":\"busy\"}", true);
+        mcp_reply_now(id_raw, from_ctrl, "{\"ok\":false,\"error\":\"busy\"}", true);
         goto done;
     }
     strlcpy(s_mcp_op.id, id_raw, sizeof(s_mcp_op.id));
     strlcpy(s_mcp_op.name, tool, sizeof(s_mcp_op.name));
+    s_mcp_op.from_ctrl = from_ctrl;
 
     if (strcmp(tool, "self.intercom.join") == 0) {
         cJSON *code = args ? cJSON_GetObjectItem(args, "invite_code") : NULL;
         const char *c = cJSON_IsString(code) ? code->valuestring : NULL;
         if (c == NULL || strlen(c) != 6) {
-            linx_mcp_reply_result(id_raw,
+            mcp_reply_now(id_raw, from_ctrl,
                 "{\"ok\":false,\"error\":\"bad_request\",\"message\":\"invite_code 需要六位数字\"}", true);
             goto done;
         }
@@ -575,7 +598,7 @@ static void on_mcp_call(app_event_t *ev)
         cJSON *rn = args ? cJSON_GetObjectItem(args, "room_name") : NULL;
         const char *r = cJSON_IsString(rn) ? rn->valuestring : NULL;
         if (r == NULL || r[0] == 0) {
-            linx_mcp_reply_result(id_raw,
+            mcp_reply_now(id_raw, from_ctrl,
                 "{\"ok\":false,\"error\":\"bad_request\",\"message\":\"room_name required\"}", true);
             goto done;
         }
@@ -590,12 +613,12 @@ static void on_mcp_call(app_event_t *ev)
             snprintf(js, sizeof(js),
                      "{\"ok\":true,\"mode\":\"%s\",\"muted\":%s}",
                      in_intercom() ? "intercom" : "linx", s_muted ? "true" : "false");
-            linx_mcp_reply_result(id_raw, js, false);
+            mcp_reply_now(id_raw, from_ctrl, js, false);
         }
     } else if (strcmp(tool, "self.intercom.set_mute") == 0) {
         cJSON *m = args ? cJSON_GetObjectItem(args, "muted") : NULL;
         if (!cJSON_IsBool(m)) {
-            linx_mcp_reply_result(id_raw,
+            mcp_reply_now(id_raw, from_ctrl,
                 "{\"ok\":false,\"error\":\"bad_request\",\"message\":\"muted must be boolean\"}", true);
             goto done;
         }
@@ -609,10 +632,14 @@ static void on_mcp_call(app_event_t *ev)
         } else {
             /* already in linx mode: report success without a room op */
             s_mcp_op.active = false;
-            linx_mcp_reply_result(id_raw, "{\"ok\":true,\"left\":false,\"mode\":\"linx\"}", false);
+            mcp_reply_now(id_raw, from_ctrl, "{\"ok\":true,\"left\":false,\"mode\":\"linx\"}", false);
         }
     } else {
-        linx_mcp_reply_error(id_raw, -32601, "unknown tool");
+        if (from_ctrl) {
+            mcp_reply_now(id_raw, true, "{\"ok\":false,\"error\":\"unknown_tool\"}", true);
+        } else {
+            linx_mcp_reply_error(id_raw, -32601, "unknown tool");
+        }
     }
 done:
     free(id_raw);

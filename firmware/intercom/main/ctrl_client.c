@@ -152,6 +152,16 @@ esp_err_t ctrl_send_leave(void)
     return ctrl_send_json(root);
 }
 
+esp_err_t ctrl_send_op_result(const char *op_id, bool ok, const char *result_json)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "op_result");
+    cJSON_AddStringToObject(root, "op_id", op_id);
+    cJSON_AddBoolToObject(root, "ok", ok);
+    cJSON_AddStringToObject(root, "message", result_json ? result_json : "{}");
+    return ctrl_send_json(root);
+}
+
 /* ---------- inbound dispatch ---------- */
 
 static void post2(app_ev_type_t t, const cJSON *m1, const cJSON *m2, int arg0, bool flag)
@@ -263,6 +273,51 @@ static void dispatch_message(cJSON *root)
         }
         app_post_str(APP_EV_NOTIFY, cJSON_IsString(ev) ? ev->valuestring : NULL,
                      m2, 0, is_name);
+    } else if (strcmp(t, "op") == 0) {
+        /* server-initiated op (cloud MCP). Translate to the packed MCP call
+         * format so the app runs it through the same tool dispatcher; the
+         * reply goes back over this channel via op_result. */
+        cJSON *opid = cJSON_GetObjectItem(root, "op_id");
+        cJSON *op = cJSON_GetObjectItem(root, "op");
+        cJSON *arg = cJSON_GetObjectItem(root, "op_arg");
+        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        if (!cJSON_IsString(opid) || !cJSON_IsString(op)) {
+            return;
+        }
+        const char *tool = NULL;
+        const char *akey = NULL;
+        if (strcmp(op->valuestring, "join") == 0) {
+            tool = "self.intercom.join"; akey = "invite_code";
+        } else if (strcmp(op->valuestring, "switch") == 0) {
+            tool = "self.intercom.switch"; akey = "room_name";
+        } else if (strcmp(op->valuestring, "status") == 0) {
+            tool = "self.intercom.status";
+        } else if (strcmp(op->valuestring, "set_mute") == 0) {
+            tool = "self.intercom.set_mute";
+        } else if (strcmp(op->valuestring, "leave") == 0) {
+            tool = "self.intercom.leave";
+        }
+        if (tool == NULL) {
+            ctrl_send_op_result(opid->valuestring, false,
+                                "{\"ok\":false,\"error\":\"bad_request\"}");
+            return;
+        }
+        cJSON *call = cJSON_CreateObject();
+        cJSON_AddStringToObject(call, "id", opid->valuestring);
+        cJSON_AddStringToObject(call, "name", tool);
+        cJSON *args = cJSON_AddObjectToObject(call, "arguments");
+        if (akey && cJSON_IsString(arg)) {
+            cJSON_AddStringToObject(args, akey, arg->valuestring);
+        }
+        if (cJSON_IsBool(muted)) {
+            cJSON_AddBoolToObject(args, "muted", cJSON_IsTrue(muted));
+        }
+        cJSON_AddBoolToObject(call, "ctrl", true);
+        char *packed = cJSON_PrintUnformatted(call);
+        cJSON_Delete(call);
+        if (packed) {
+            app_post(APP_EV_MCP_CALL, packed, NULL, 0, false);
+        }
     } else if (strcmp(t, "error") == 0) {
         cJSON *e = cJSON_GetObjectItem(root, "error");
         cJSON *code = cJSON_IsObject(e) ? cJSON_GetObjectItem(e, "code") : NULL;

@@ -28,6 +28,11 @@ type RoomInfo struct {
 	OnlineCount int    `json:"online_count"`
 }
 
+type ctrlErr struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 type ctrlMsg struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id,omitempty"`
@@ -42,10 +47,7 @@ type ctrlMsg struct {
 	Room      *RoomInfo `json:"room,omitempty"`
 	Candidate *iceCand  `json:"candidate,omitempty"`
 	Completed bool      `json:"completed,omitempty"`
-	Error     *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+	Error     *ctrlErr `json:"error,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	InviteCode   string   `json:"invite_code,omitempty"`
 	InviteDigits string   `json:"invite_digits,omitempty"`
@@ -53,6 +55,13 @@ type ctrlMsg struct {
 	Members      []string `json:"members,omitempty"`
 	Event        string   `json:"event,omitempty"`
 	Muted        *bool    `json:"muted,omitempty"`
+	// server-initiated op (downlink) / op_result (uplink)
+	OpID    string `json:"op_id,omitempty"`
+	Op      string `json:"op,omitempty"`
+	OpArg   string `json:"op_arg,omitempty"`
+	OpMute  *bool  `json:"op_muted,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type ctrlClient struct {
@@ -119,6 +128,8 @@ func (c *ctrlClient) readLoop() {
 			}
 		case "notify":
 			c.dev.onNotify(m.Event, m.DeviceID)
+		case "op":
+			c.dev.handleOp(m)
 		}
 		c.recvCh <- m
 	}

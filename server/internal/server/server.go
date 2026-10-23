@@ -30,6 +30,7 @@ type ControlServer struct {
 	byDevice  map[string]*Session
 	byHandle  map[int64]*Session
 	orphanICE map[int64][]pendingICE
+	mcp       *MCPAdapter
 }
 
 type Session struct {
@@ -47,6 +48,7 @@ type Session struct {
 	janusICE      []pendingICE
 	answerSent    bool
 	joinResps     map[string]*OutMessage // request_id dedup
+	pendingOps    map[string]chan *InMessage // op_id -> result waiter
 	closed        bool
 }
 
@@ -131,6 +133,11 @@ func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 	}
 }
 
+// AttachMCP registers the cloud MCP (SSE) endpoints on the server handler.
+func (s *ControlServer) AttachMCP(defaultTarget string) {
+	s.mcp = NewMCPAdapter(s, defaultTarget)
+}
+
 func (s *ControlServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
@@ -140,6 +147,9 @@ func (s *ControlServer) Handler() http.Handler {
 	})
 	mux.HandleFunc("/admin/register-entry", s.handleRegisterEntry)
 	mux.HandleFunc("/admin/rooms", s.handleRooms)
+	if s.mcp != nil {
+		s.mcp.Register(mux)
+	}
 	mux.Handle("/", http.FileServer(http.Dir("tools/browser")))
 	return mux
 }
@@ -243,6 +253,8 @@ func (s *ControlServer) dispatch(sess *Session, m *InMessage) {
 		s.onLeave(ctx, sess, m)
 	case "ping":
 		sess.send(&OutMessage{Type: "pong", RequestID: m.RequestID})
+	case "op_result":
+		s.onOpResult(sess, m)
 	default:
 		sess.send(errOut(m.RequestID, "bad_request", "unknown type "+m.Type))
 	}
@@ -622,6 +634,50 @@ func (s *ControlServer) onConfirm(ctx context.Context, sess *Session, m *InMessa
 	sess.mu.Unlock()
 	if err := s.media.SetMuted(context.Background(), p, muted); err != nil {
 		log.Printf("device %s: restore mute %v: %v", sess.deviceID, muted, err)
+	}
+}
+
+// DispatchOp sends a server-initiated op to a connected device and waits for
+// its op_result. ops are serialized per call site by opID uniqueness; a second
+// dispatch for the same op_id returns the first result (callers use fresh ids).
+func (s *ControlServer) DispatchOp(ctx context.Context, deviceID, op, arg string, muted *bool) (*InMessage, error) {
+	s.mu.Lock()
+	sess := s.byDevice[deviceID]
+	s.mu.Unlock()
+	if sess == nil {
+		return nil, &OutError{Code: "target_offline", Message: "目标设备离线"}
+	}
+	opID := fmt.Sprintf("op%d", time.Now().UnixNano())
+	ch := make(chan *InMessage, 1)
+	sess.mu.Lock()
+	if sess.pendingOps == nil {
+		sess.pendingOps = map[string]chan *InMessage{}
+	}
+	sess.pendingOps[opID] = ch
+	sess.mu.Unlock()
+	defer func() {
+		sess.mu.Lock()
+		delete(sess.pendingOps, opID)
+		sess.mu.Unlock()
+	}()
+	if err := sess.send(&OutMessage{Type: "op", OpID: opID, Op: op, OpArg: arg, OpMute: muted}); err != nil {
+		return nil, &OutError{Code: "send_failed", Message: err.Error()}
+	}
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-ctx.Done():
+		return nil, &OutError{Code: "op_timeout", Message: "设备操作超时"}
+	}
+}
+
+func (s *ControlServer) onOpResult(sess *Session, m *InMessage) {
+	sess.mu.Lock()
+	ch := sess.pendingOps[m.OpID]
+	delete(sess.pendingOps, m.OpID)
+	sess.mu.Unlock()
+	if ch != nil {
+		ch <- m
 	}
 }
 
