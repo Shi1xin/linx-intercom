@@ -147,6 +147,7 @@ func (s *ControlServer) Handler() http.Handler {
 	})
 	mux.HandleFunc("/admin/register-entry", s.handleRegisterEntry)
 	mux.HandleFunc("/admin/rooms", s.handleRooms)
+	mux.HandleFunc("/admin/op", s.handleAdminOp)
 	if s.mcp != nil {
 		s.mcp.Register(mux)
 	}
@@ -173,6 +174,42 @@ func (s *ControlServer) handleRegisterEntry(w http.ResponseWriter, r *http.Reque
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleAdminOp dispatches a server-initiated op to a device and returns the
+// device's op_result verbatim. Used by the mcpproxy bridge and admin scripts.
+func (s *ControlServer) handleAdminOp(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdminToken != "" && r.Header.Get("X-Admin-Token") != s.cfg.AdminToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		DeviceID string `json:"device_id"`
+		Op       string `json:"op"`
+		Arg      string `json:"arg"`
+		Muted    *bool  `json:"muted"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" || req.Op == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := s.DispatchOp(ctx, req.DeviceID, req.Op, req.Arg, req.Muted)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		if oe, ok := err.(*OutError); ok {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": oe})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *ControlServer) handleRooms(w http.ResponseWriter, r *http.Request) {
