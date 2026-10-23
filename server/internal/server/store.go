@@ -181,13 +181,23 @@ func (s *Store) RoomByName(ctx context.Context, name string) (*Room, error) {
 }
 
 // CreateRoom inserts a room with generated name and invite code.
-func (s *Store) CreateRoom(ctx context.Context, janusRoom int64) (*Room, error) {
-	return s.createRoomTx(ctx, janusRoom, nil)
+func (s *Store) CreateRoom(ctx context.Context) (*Room, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	r, err := createRoomTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return r, tx.Commit()
 }
 
 // CreateRoomWithEntry atomically creates a room and binds an NFC entry to it.
-// If the entry already exists, returns the existing resolution.
-func (s *Store) CreateRoomWithEntry(ctx context.Context, entryID string, janusRoomFn func(context.Context) (int64, error)) (*Room, bool, error) {
+// If the entry already exists as a room entry, returns that room with created=false.
+// If the entry exists as a device entry, returns nil room.
+func (s *Store) CreateRoomWithEntry(ctx context.Context, entryID string) (*Room, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
@@ -195,13 +205,12 @@ func (s *Store) CreateRoomWithEntry(ctx context.Context, entryID string, janusRo
 	defer tx.Rollback()
 
 	var kind string
-	var roomID, devID sql.NullInt64
+	var roomID sql.NullInt64
 	var devStr sql.NullString
 	err = tx.QueryRowContext(ctx,
 		`SELECT kind, room_id, device_id FROM nfc_entries WHERE entry_id=?`, entryID).
 		Scan(&kind, &roomID, &devStr)
 	if err == nil {
-		// existing entry
 		if kind == "room" {
 			r, err := roomByIDTx(ctx, tx, roomID.Int64)
 			return r, false, err
@@ -212,11 +221,7 @@ func (s *Store) CreateRoomWithEntry(ctx context.Context, entryID string, janusRo
 		return nil, false, err
 	}
 
-	jr, err := janusRoomFn(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	r, err := createRoomTx(ctx, tx, jr)
+	r, err := createRoomTx(ctx, tx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -225,43 +230,33 @@ func (s *Store) CreateRoomWithEntry(ctx context.Context, entryID string, janusRo
 		entryID, "room", r.ID); err != nil {
 		return nil, false, err
 	}
-	_ = devID
 	if err = tx.Commit(); err != nil {
 		return nil, false, err
 	}
 	return r, true, nil
 }
 
-func (s *Store) createRoomTx(ctx context.Context, janusRoom int64, _ any) (*Room, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	r, err := createRoomTx(ctx, tx, janusRoom)
-	if err != nil {
-		return nil, err
-	}
-	return r, tx.Commit()
-}
+const janusRoomBase = int64(700000)
 
-func createRoomTx(ctx context.Context, tx *sql.Tx, janusRoom int64) (*Room, error) {
+func createRoomTx(ctx context.Context, tx *sql.Tx) (*Room, error) {
 	var maxID sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM rooms`).Scan(&maxID); err != nil {
 		return nil, err
 	}
-	name := RoomName(maxID.Int64 + 1)
+	nextID := maxID.Int64 + 1
+	name := RoomName(nextID)
 	code, err := genInviteCodeTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO rooms(name,invite_code,janus_room) VALUES(?,?,?)`, name, code, janusRoom)
+		`INSERT INTO rooms(name,invite_code,janus_room) VALUES(?,?,?)`,
+		name, code, janusRoomBase+nextID)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &Room{ID: id, Name: name, InviteCode: code, JanusRoom: janusRoom}, nil
+	return &Room{ID: id, Name: name, InviteCode: code, JanusRoom: janusRoomBase + id}, nil
 }
 
 func roomByIDTx(ctx context.Context, tx *sql.Tx, id int64) (*Room, error) {

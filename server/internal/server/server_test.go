@@ -52,11 +52,11 @@ func TestStoreRoomLifecycle(t *testing.T) {
 		t.Fatal("muted not persisted")
 	}
 
-	r1, err := s.CreateRoom(ctx, 700001)
+	r1, err := s.CreateRoom(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := s.CreateRoom(ctx, 700002)
+	r2, err := s.CreateRoom(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,19 +93,17 @@ func TestStoreRoomLifecycle(t *testing.T) {
 func TestEntryCreateIdempotent(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	created := 0
-	fn := func(c context.Context) (int64, error) { created++; return 700000 + int64(created), nil }
 
-	r1, isNew, err := s.CreateRoomWithEntry(ctx, "tag-001", fn)
+	r1, isNew, err := s.CreateRoomWithEntry(ctx, "tag-001")
 	if err != nil || !isNew || r1 == nil {
 		t.Fatalf("first create: %v new=%v err=%v", r1, isNew, err)
 	}
-	r2, isNew, err := s.CreateRoomWithEntry(ctx, "tag-001", fn)
+	if r1.JanusRoom != janusRoomBase+r1.ID {
+		t.Fatalf("janus room derivation: %d", r1.JanusRoom)
+	}
+	r2, isNew, err := s.CreateRoomWithEntry(ctx, "tag-001")
 	if err != nil || isNew || r2 == nil || r2.ID != r1.ID {
 		t.Fatalf("second tap: %v new=%v err=%v", r2, isNew, err)
-	}
-	if created != 1 {
-		t.Fatalf("janus room allocated %d times, want 1", created)
 	}
 
 	kind, roomID, _, err := s.LookupEntry(ctx, "tag-001")
@@ -118,7 +116,7 @@ func TestResumePersistence(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	dev, _ := s.UpsertDevice(ctx, "d1", "")
-	r, _ := s.CreateRoom(ctx, 700001)
+	r, _ := s.CreateRoom(ctx)
 	if err := s.SetResumeRoom(ctx, dev.ID, &r.ID); err != nil {
 		t.Fatal(err)
 	}

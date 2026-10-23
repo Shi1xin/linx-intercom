@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,7 @@ type client struct {
 	track  *webrtc.TrackLocalStaticSample
 	rxPkts atomic.Int64
 	rxBytes atomic.Int64
+	txPkts  atomic.Int64
 	connected atomic.Bool
 	remoteDesc atomic.Bool
 	pendingICE []webrtc.ICECandidateInit
@@ -150,6 +152,7 @@ func (c *client) readLoop() {
 			}
 			mid := m.Candidate.SDPMid
 			mli := uint16(m.Candidate.SDPMLineIndex)
+			log.Printf("remote cand: %s", m.Candidate.Candidate)
 			c.addRemoteCandidate(webrtc.ICECandidateInit{
 				Candidate: m.Candidate.Candidate, SDPMid: &mid, SDPMLineIndex: &mli,
 			})
@@ -208,9 +211,19 @@ func (c *client) joinRoom(devID string, target map[string]string) msg {
 	return m
 }
 
+var turnAddr string
+
 func (c *client) startMedia() error {
 	var err error
-	c.pc, err = webrtc.NewPeerConnection(webrtc.Configuration{})
+	cfg := webrtc.Configuration{}
+	if turnAddr != "" {
+		cfg.ICEServers = []webrtc.ICEServer{{
+			URLs:       []string{"turn:" + turnAddr + "?transport=udp"},
+			Username:   "intercom",
+			Credential: "night2026",
+		}}
+	}
+	c.pc, err = webrtc.NewPeerConnection(cfg)
 	if err != nil {
 		return err
 	}
@@ -241,6 +254,7 @@ func (c *client) startMedia() error {
 			return
 		}
 		j := cd.ToJSON()
+		log.Printf("local cand: %s", j.Candidate)
 		mid, mli := "", uint16(0)
 		if j.SDPMid != nil {
 			mid = *j.SDPMid
@@ -301,7 +315,11 @@ func (c *client) streamOgg(path string) {
 				}
 				last = hdr.GranulePosition
 				if c.track != nil {
-					_ = c.track.WriteSample(media.Sample{Data: pkt, Duration: dur})
+					if err := c.track.WriteSample(media.Sample{Data: pkt, Duration: dur}); err != nil {
+						log.Printf("write sample: %v", err)
+						return
+					}
+					c.txPkts.Add(1)
 				}
 				time.Sleep(dur)
 			}
@@ -322,8 +340,10 @@ func main() {
 		record  = flag.String("record", "", "record downlink to ogg")
 		listen  = flag.Duration("listen", 8*time.Second, "listen duration")
 		info    = flag.Bool("info", false, "query room info after join")
+		turn    = flag.String("turn", "", "turn server host:port")
 	)
 	flag.Parse()
+	turnAddr = *turn
 
 	if *record != "" {
 		w, err := oggwriter.New(*record, 48000, 2)
@@ -361,8 +381,13 @@ func main() {
 	}
 	time.Sleep(*listen)
 	if *switchTo != "" {
-		j := c.join(map[string]string{"kind": "room_name", "name": *switchTo})
-		log.Printf("SWITCH ok=%v room=%v err=%v", j.OK, j.Room.Name, j.Error)
+		tgt := map[string]string{"kind": "room_name", "name": *switchTo}
+		if strings.HasPrefix(*switchTo, "invite:") {
+			tgt = map[string]string{"kind": "invite", "code": strings.TrimPrefix(*switchTo, "invite:")}
+		}
+		t0 := time.Now()
+		j := c.join(tgt)
+		log.Printf("SWITCH ok=%v room=%v err=%v took=%v", j.OK, j.Room.Name, j.Error, time.Since(t0).Round(time.Millisecond))
 		if j.OK && !j.NeedMedia {
 			c.send(msg{Type: "confirm", RequestID: "cfsw"})
 			m := c.waitType("confirm_result")
@@ -370,7 +395,7 @@ func main() {
 		}
 		time.Sleep(3 * time.Second)
 	}
-	log.Printf("RESULT rx_packets=%d rx_bytes=%d connected=%v", c.rxPkts.Load(), c.rxBytes.Load(), c.connected.Load())
+	log.Printf("RESULT rx_packets=%d rx_bytes=%d tx_packets=%d connected=%v", c.rxPkts.Load(), c.rxBytes.Load(), c.txPkts.Load(), c.connected.Load())
 }
 
 var recGlobal *oggwriter.OggWriter

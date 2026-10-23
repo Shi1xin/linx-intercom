@@ -13,8 +13,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-const nextJanusRoomBase = int64(700000)
-
 type Config struct {
 	Addr        string // listen address, e.g. ":8080"
 	JanusURL    string // ws://host:8188
@@ -338,18 +336,15 @@ func (s *ControlServer) resolveTarget(ctx context.Context, sess *Session, t *Joi
 			return s.resolveDeviceTag(ctx, devID)
 		}
 		// unregistered tag: atomically create room + bind entry
-		room, _, err := s.store.CreateRoomWithEntry(ctx, t.EntryID, func(c context.Context) (int64, error) {
-			jr := s.allocJanusRoom()
-			if err := s.media.EnsureRoom(c, jr); err != nil {
-				return 0, err
-			}
-			return jr, nil
-		})
+		room, _, err := s.store.CreateRoomWithEntry(ctx, t.EntryID)
 		if err != nil {
 			return nil, err
 		}
 		if room == nil {
 			return nil, &OutError{Code: "entry_ambiguous", Message: "标签类型冲突"}
+		}
+		if err := s.media.EnsureRoom(ctx, room.JanusRoom); err != nil {
+			return nil, &OutError{Code: "media_failed", Message: err.Error()}
 		}
 		return room, nil
 	case "device":
@@ -381,29 +376,16 @@ func (s *ControlServer) resolveDeviceTag(ctx context.Context, targetDev string) 
 		return s.store.GetRoom(ctx, cur)
 	}
 	// target online, no current room: create a room and summon both
-	jr := s.allocJanusRoom()
-	if err := s.media.EnsureRoom(ctx, jr); err != nil {
+	room, err := s.store.CreateRoom(ctx)
+	if err != nil {
 		return nil, err
 	}
-	room, err := s.store.CreateRoom(ctx, jr)
-	if err != nil {
+	if err := s.media.EnsureRoom(ctx, room.JanusRoom); err != nil {
 		return nil, err
 	}
 	// notify target device to join
 	tsess.send(&OutMessage{Type: "notify", Event: "summon", Room: s.roomInfo(ctx, room)})
 	return room, nil
-}
-
-var janusSeq = struct {
-	mu sync.Mutex
-	n  int64
-}{n: nextJanusRoomBase}
-
-func (s *ControlServer) allocJanusRoom() int64 {
-	janusSeq.mu.Lock()
-	defer janusSeq.mu.Unlock()
-	janusSeq.n++
-	return janusSeq.n
 }
 
 func (s *ControlServer) onJoin(ctx context.Context, sess *Session, m *InMessage) {
