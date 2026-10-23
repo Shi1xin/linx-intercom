@@ -21,7 +21,7 @@ flowchart TB
 
 设备上行经过采集、回声消除、降噪和 Opus 编码，下行经过解码和播放。扬声器播放信号作为回声消除参考，覆盖通话声音和设备提示音。语音活动检测用于静音抑制
 
-语音控制识别唤醒词和设备命令。进入指令处理时，设备暂停麦克风上行；操作完成后，按会话状态和静音设置恢复音频。提示使用预录音或 TTS
+语音控制从按下命令键开始，松开命令键结束识别。进入指令处理时，设备暂停麦克风上行并继续播放房间声音；操作完成后，按会话状态和静音设置恢复音频。提示使用预录音或 TTS
 
 ## 数据模型
 
@@ -52,9 +52,9 @@ stateDiagram-v2
     Idle --> Joining: NFC 或语音加入
     Joining --> Talking: 媒体就绪
     Joining --> Idle: 加入失败
-    Talking --> Command: 唤醒并暂停上行
+    Talking --> Command: 按下命令键并暂停上行
     Command --> Talking: 查询或更新静音设置
-    Command --> Talking: 指令取消或超时
+    Command --> Talking: 命令完成或取消
     Command --> Switching: 选择目标房间
     Talking --> Switching: 触碰其他房间入口
     Switching --> Talking: 切换成功
@@ -125,7 +125,7 @@ sequenceDiagram
             D-->>U: 播放声音
         end
         opt 查询或静音命令
-            U->>D: 唤醒与命令
+            U->>D: 按住命令键说出命令
             D->>D: 暂停麦克风上行
             D->>C: 查询或更新静音设置
             opt 静音设置发生变化
@@ -149,7 +149,7 @@ sequenceDiagram
     participant D as 设备
     participant C as 控制服务
     participant J as AudioBridge
-    U->>D: 语音切房或 NFC 触碰
+    U->>D: 按住命令键说出切房命令或触碰 NFC
     D->>D: 暂停麦克风上行
     D->>C: 切房请求（目标、请求 ID）
     C->>C: 解析目标房间
@@ -181,7 +181,7 @@ sequenceDiagram
     participant D as 设备
     participant C as 控制服务
     participant J as AudioBridge
-    U->>D: 退出房间
+    U->>D: 按住命令键说出退出命令
     D->>D: 清除恢复目标并停止音频
     D->>C: 退出请求
     C->>J: leave
