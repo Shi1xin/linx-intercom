@@ -12,3 +12,4 @@ server/bin/
 server/coverage/
 infra/data/
 artifacts/
+/.local/
