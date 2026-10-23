@@ -138,11 +138,20 @@ static void capture_task(void *arg)
     uint8_t *pkt = heap_caps_malloc(512, MALLOC_CAP_8BIT);
     uint32_t pts = 0;
     ESP_LOGI(TAG, "capture task up");
+    int dbg = 0;
     for (;;) {
         int n = audio_dev_mic_read(pcm, MIC_FRAME_SAMPLES);
         if (n <= 0) {
             vTaskDelay(pdMS_TO_TICKS(MIC_FRAME_MS));
             continue;
+        }
+        if (++dbg % 200 == 0) {
+            int32_t peak = 0;
+            for (int i = 0; i < n; i++) {
+                int32_t v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+                if (v > peak) peak = v;
+            }
+            ESP_LOGI(TAG, "mic peak=%d", (int)peak);
         }
         if (s_command_active) {
             cmd_capture_feed(pcm, n);
@@ -153,6 +162,9 @@ static void capture_task(void *arg)
         }
         audio_proc_mic(pcm, n);
         int enc = audio_opus_encode(pcm, n, pkt, 512);
+        if (dbg % 200 == 0) {
+            ESP_LOGI(TAG, "enc %dB first=%02x%02x", enc, pkt[0], enc > 1 ? pkt[1] : 0);
+        }
         if (enc > 0) {
             rtc_peer_send_audio(pkt, enc, pts);
             pts += RTP_PTS_STEP;
