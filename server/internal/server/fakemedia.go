@@ -33,6 +33,13 @@ func (f *FakeMedia) record(s string) error {
 	return nil
 }
 
+// SetFailNext makes the next media call return err (thread-safe).
+func (f *FakeMedia) SetFailNext(err error) {
+	f.mu.Lock()
+	f.FailNext = err
+	f.mu.Unlock()
+}
+
 func (f *FakeMedia) CallsSnapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -26,6 +26,9 @@ static int s_req_seq;
 static char  *s_rx_buf;
 static size_t s_rx_len;
 
+static char s_last_join_rid[16];
+static char s_last_confirm_rid[16];
+
 static const char *next_req_id(char *buf, size_t n)
 {
     snprintf(buf, n, "r%d", ++s_req_seq);
@@ -72,6 +75,7 @@ esp_err_t ctrl_send_join(const char *kind, const char *arg)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "join");
     cJSON_AddStringToObject(root, "request_id", next_req_id(rid, sizeof(rid)));
+    strlcpy(s_last_join_rid, rid, sizeof(s_last_join_rid));
     cJSON *target = cJSON_AddObjectToObject(root, "target");
     cJSON_AddStringToObject(target, "kind", kind);
     if (strcmp(kind, "nfc") == 0) {
@@ -121,6 +125,7 @@ esp_err_t ctrl_send_confirm(void)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "confirm");
     cJSON_AddStringToObject(root, "request_id", next_req_id(rid, sizeof(rid)));
+    strlcpy(s_last_confirm_rid, rid, sizeof(s_last_confirm_rid));
     return ctrl_send_json(root);
 }
 
@@ -195,6 +200,11 @@ static void dispatch_message(cJSON *root)
                      cJSON_IsBool(muted) ? cJSON_IsTrue(muted) : 0,
                      cJSON_IsTrue(ok));
     } else if (strcmp(t, "join_result") == 0) {
+        cJSON *rid = cJSON_GetObjectItem(root, "request_id");
+        if (cJSON_IsString(rid) && s_last_join_rid[0] &&
+            strcmp(rid->valuestring, s_last_join_rid) != 0) {
+            return;  /* stale join_result from a superseded attempt */
+        }
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *need = cJSON_GetObjectItem(root, "need_media");
         cJSON *room = cJSON_GetObjectItem(root, "room");
@@ -229,6 +239,11 @@ static void dispatch_message(cJSON *root)
             }
         }
     } else if (strcmp(t, "confirm_result") == 0) {
+        cJSON *rid = cJSON_GetObjectItem(root, "request_id");
+        if (cJSON_IsString(rid) && s_last_confirm_rid[0] &&
+            strcmp(rid->valuestring, s_last_confirm_rid) != 0) {
+            return;  /* stale confirm_result must not re-enter TALKING */
+        }
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *room = cJSON_GetObjectItem(root, "room");
         cJSON *n = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "name") : NULL;

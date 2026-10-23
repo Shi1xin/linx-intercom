@@ -17,6 +17,14 @@ int  audio_dev_mic_read(int16_t *out, int samples);
  * Copies data; drops when queue is full (jitter). */
 void audio_rx_enqueue(const uint8_t *data, int size);
 
+/* downlink arbitration: exactly one source feeds the decoder at a time.
+ * AUDIO_SRC_LINX = platform TTS (16k opus), AUDIO_SRC_ROOM = Janus (48k opus) */
+#define AUDIO_SRC_LINX 0
+#define AUDIO_SRC_ROOM 1
+void audio_rx_set_source(int src);
+void audio_rx_enqueue_src(int src, const uint8_t *data, int size);
+void audio_decoder_reset(void);
+
 /* Drop all queued downlink frames (used on room switch with need_media=false
  * and on peer teardown). */
 void audio_rx_flush(void);

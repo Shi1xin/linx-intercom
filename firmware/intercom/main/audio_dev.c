@@ -21,8 +21,11 @@
 
 typedef struct {
     int      len;
+    int      src;   /* AUDIO_SRC_LINX / AUDIO_SRC_ROOM */
     uint8_t  data[RX_PKT_MAX];
 } rx_pkt_t;
+
+static int s_rx_src = AUDIO_SRC_LINX;
 
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
@@ -119,12 +122,29 @@ int audio_dev_mic_read(int16_t *out, int samples)
 
 /* ---------- downlink playback ---------- */
 
+void audio_rx_set_source(int src)
+{
+    if (src != s_rx_src) {
+        s_rx_src = src;
+        audio_rx_flush();          /* drop the other source's stale frames */
+        audio_decoder_reset();     /* opus decoder state is per-stream */
+    }
+}
+
+void audio_rx_enqueue_src(int src, const uint8_t *data, int size)
+{
+    if (src != s_rx_src) {
+        return;   /* arbitration: only the active source feeds the decoder */
+    }
+    audio_rx_enqueue(data, size);
+}
+
 void audio_rx_enqueue(const uint8_t *data, int size)
 {
     if (s_rx_queue == NULL || size <= 0 || size > RX_PKT_MAX) {
         return;
     }
-    rx_pkt_t pkt = { .len = size };
+    rx_pkt_t pkt = { .len = size, .src = s_rx_src };
     memcpy(pkt.data, data, size);
     if (xQueueSend(s_rx_queue, &pkt, 0) != pdTRUE) {
         /* queue full: drop oldest then push newest to bound latency */
@@ -163,6 +183,9 @@ static void playback_task(void *arg)
             memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));
             playback_write(s_pcm24, OUT_SAMPLES);
             continue;
+        }
+        if (pkt.src != s_rx_src) {
+            continue;   /* queued before a source switch; decoder never sees it */
         }
         int dec_samples = audio_opus_decode(pkt.data, pkt.len, pcm48, sizeof(pcm48) / sizeof(pcm48[0]));
         if (dec_samples <= 0) {

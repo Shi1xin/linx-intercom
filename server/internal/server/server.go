@@ -707,7 +707,58 @@ func (s *ControlServer) DispatchOp(ctx context.Context, deviceID, op, arg string
 	}
 }
 
+// normalizeOpResult lifts fields from an op_result whose payload is a
+// JSON-encoded `message` string (firmware shape) so callers always see
+// structured mode/room/muted regardless of device implementation.
+func normalizeOpResult(m *InMessage) {
+	if m.Mode != "" || len(m.OKMsg) == 0 || m.OKMsg[0] != '{' {
+		return
+	}
+	var inner struct {
+		OK    *bool   `json:"ok"`
+		Mode  *string `json:"mode"`
+		Muted *bool   `json:"muted"`
+		Room  *string `json:"room"`
+		Code  *string `json:"invite_code"`
+		Count *int    `json:"online_count"`
+		Err   *string `json:"error"`
+		Msg   *string `json:"message"`
+	}
+	if json.Unmarshal([]byte(m.OKMsg), &inner) != nil {
+		return
+	}
+	if inner.OK != nil {
+		m.OK = *inner.OK
+	}
+	if inner.Mode != nil {
+		m.Mode = *inner.Mode
+	}
+	if inner.Muted != nil {
+		m.Muted = inner.Muted
+	}
+	if inner.Room != nil {
+		m.Room = &RoomInfo{Name: *inner.Room}
+		if inner.Code != nil {
+			m.Room.InviteCode = *inner.Code
+		}
+		if inner.Count != nil {
+			m.Room.OnlineCount = *inner.Count
+		}
+	}
+	if !m.OK && m.Error == nil && (inner.Err != nil || inner.Msg != nil) {
+		code, msg := "op_failed", ""
+		if inner.Err != nil {
+			code = *inner.Err
+		}
+		if inner.Msg != nil {
+			msg = *inner.Msg
+		}
+		m.Error = &OutError{Code: code, Message: msg}
+	}
+}
+
 func (s *ControlServer) onOpResult(sess *Session, m *InMessage) {
+	normalizeOpResult(m)
 	sess.mu.Lock()
 	ch := sess.pendingOps[m.OpID]
 	delete(sess.pendingOps, m.OpID)

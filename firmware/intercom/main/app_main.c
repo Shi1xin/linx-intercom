@@ -67,6 +67,7 @@ static char s_linx_client_id[48];
  * thrash ICE every Janus keepalive cycle */
 static int  s_rejoin_count;
 #define MAX_MEDIA_REJOIN 5
+static int16_t s_pcm_silence[MIC_FRAME_SAMPLES]; /* zeros: keepalive payload */
 
 /* pending MCP call: reply is sent when the underlying room op resolves */
 static struct {
@@ -133,6 +134,7 @@ static void update_linx_gate(void)
 {
     bool allow = !in_intercom() || esp_timer_get_time() < s_tts_window_until;
     linx_set_playback_gate(allow);
+    audio_rx_set_source(allow ? AUDIO_SRC_LINX : AUDIO_SRC_ROOM);
 }
 
 static void open_tts_window(void)
@@ -166,8 +168,11 @@ static void apply_mute(bool muted)
     ESP_LOGI(TAG, "muted=%d", muted);
 }
 
-static void start_join(const char *kind, const char *arg)
+static void start_join_ex(const char *kind, const char *arg, bool auto_rejoin)
 {
+    if (!auto_rejoin) {
+        s_rejoin_count = 0;
+    }
     if (arg == NULL || arg[0] == 0 || kind == NULL) {
         return;
     }
@@ -182,6 +187,11 @@ static void start_join(const char *kind, const char *arg)
         esp_timer_start_once(s_op_timer, (int64_t)OP_TIMEOUT_MS * 1000);
     }
     ctrl_send_join(kind, arg);
+}
+
+static void start_join(const char *kind, const char *arg)
+{
+    start_join_ex(kind, arg, false);
 }
 
 static void schedule_ws_reconnect(int delay_ms)
@@ -341,8 +351,17 @@ static void capture_task(void *arg)
             }
             continue;
         }
-        if (!rtc_peer_is_connected() || s_muted) {
-            was_connected = false;
+        if (s_state != APP_STATE_TALKING || !rtc_peer_is_connected()) {
+            continue;   /* uplink only after confirm lands us in TALKING */
+        }
+        if (s_muted) {
+            /* send a silence frame periodically so Janus keepalive never
+             * hangs up a muted-only leg (root cause of the rejoin churn) */
+            int enc = audio_opus_encode(s_pcm_silence, MIC_FRAME_SAMPLES, pkt, 512);
+            if (enc > 0 && (dbg % 25 == 0)) {   /* ~500ms cadence */
+                rtc_peer_send_audio(pkt, enc, pts);
+            }
+            pts += n;
             continue;
         }
         if (!was_connected) {
@@ -464,7 +483,7 @@ static void on_peer_state(app_event_t *ev)
             ESP_LOGI(TAG, "peer dropped; rejoin %s attempt %d", s_room_name, s_rejoin_count);
             teardown_media();
             set_state(APP_STATE_IDLE);
-            start_join("room_name", s_room_name);
+            start_join_ex("room_name", s_room_name, true);
         }
     }
 }
@@ -476,7 +495,9 @@ static void on_confirm_result(app_event_t *ev)
         strlcpy(s_room_name, ev->msg ? ev->msg : "", sizeof(s_room_name));
         strlcpy(s_room_code, ev->msg2 ? ev->msg2 : "", sizeof(s_room_code));
         s_online_count = ev->arg0;
-        s_rejoin_count = 0;   /* fresh confirmed media: reset rejoin budget */
+        /* note: s_rejoin_count intentionally survives confirm — the budget caps
+         * repeated drop->rejoin cycles across Janus keepalive periods. It is
+         * reset by user-initiated joins (start_join from nfc/mcp/op). */
         ESP_LOGI(TAG, "in room %s (%s) online=%d", s_room_name, s_room_code, s_online_count);
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
@@ -561,7 +582,7 @@ static void on_notify(app_event_t *ev)
         set_state(APP_STATE_IDLE);
         if (s_room_name[0] && s_rejoin_count < MAX_MEDIA_REJOIN) {
             s_rejoin_count++;
-            start_join("room_name", s_room_name);
+            start_join_ex("room_name", s_room_name, true);
         }
     }
 }
@@ -827,6 +848,16 @@ static void app_task(void *arg)
         case APP_EV_NOTIFY:            on_notify(&ev); break;
         case APP_EV_ERROR_MSG:
             ESP_LOGW(TAG, "server error %s: %s", ev.msg ? ev.msg : "?", ev.msg2 ? ev.msg2 : "");
+            /* an error while an op is in flight is most plausibly that op's
+             * failure (join rejection, mute denied...); settle it instead of
+             * leaving the caller to hit the watchdog */
+            if (s_mcp_op.active) {
+                mcp_op_finish_err(ev.msg ? ev.msg : "server_error",
+                                  ev.msg2 ? ev.msg2 : "server rejected");
+                if (s_state == APP_STATE_JOINING || s_state == APP_STATE_SWITCHING) {
+                    set_state(s_state_before_join);
+                }
+            }
             break;
         case APP_EV_PEER_SDP:
             if (ev.msg) ctrl_send_sdp(ev.msg);

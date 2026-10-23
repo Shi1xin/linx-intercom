@@ -194,12 +194,26 @@ func callTool(server, target, adminTok, name string, args map[string]any) (strin
 	if adminTok != "" {
 		req.Header.Set("X-Admin-Token", adminTok)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := opClient.Do(req)
 	if err != nil {
 		return "server op failed: " + err.Error(), true
 	}
 	defer res.Body.Close()
 	out, _ := io.ReadAll(res.Body)
 	log.Printf("op %s(%s) -> %s", op, arg, string(out))
-	return string(out), res.StatusCode != 200
+	// admin/op answers HTTP 200 even on op failure; judge by the body's ok field
+	var resObj struct {
+		OK      bool            `json:"ok"`
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if res.StatusCode != 200 {
+		return string(out), true
+	}
+	if json.Unmarshal(out, &resObj) == nil && !resObj.OK {
+		return string(out), true
+	}
+	return string(out), false
 }
+
+var opClient = &http.Client{Timeout: 35 * time.Second}
