@@ -57,6 +57,7 @@ type msg struct {
 	InviteDigits string `json:"invite_digits,omitempty"`
 	OnlineCount  int    `json:"online_count,omitempty"`
 	Event        string `json:"event,omitempty"`
+	Muted        bool   `json:"muted"`
 }
 
 type client struct {
@@ -341,6 +342,8 @@ func main() {
 		record  = flag.String("record", "", "record downlink to ogg")
 		listen  = flag.Duration("listen", 8*time.Second, "listen duration")
 		info    = flag.Bool("info", false, "query room info after join")
+		mute    = flag.Bool("mute", false, "exercise set_mute on/off")
+		leave   = flag.Bool("leave", false, "send leave before exit")
 		turn    = flag.String("turn", "", "turn server host:port")
 	)
 	flag.Parse()
@@ -397,6 +400,19 @@ func main() {
 			log.Printf("CONFIRMED %s online=%d", m.Room.Name, m.Room.OnlineCount)
 		}
 		time.Sleep(3 * time.Second)
+	}
+	if *mute {
+		c.send(msg{Type: "set_mute", RequestID: "m1", Muted: true})
+		m := c.waitType("mute_result")
+		log.Printf("MUTE ok=%v", m.OK)
+		c.send(msg{Type: "set_mute", RequestID: "m2", Muted: false})
+		m = c.waitType("mute_result")
+		log.Printf("UNMUTE ok=%v", m.OK)
+	}
+	if *leave {
+		c.send(msg{Type: "leave", RequestID: "lv1"})
+		m := c.waitType("leave_result")
+		log.Printf("LEAVE ok=%v", m.OK)
 	}
 	log.Printf("RESULT rx_packets=%d rx_bytes=%d tx_packets=%d connected=%v", c.rxPkts.Load(), c.rxBytes.Load(), c.txPkts.Load(), c.connected.Load())
 }
