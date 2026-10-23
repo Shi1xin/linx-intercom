@@ -335,6 +335,7 @@ func main() {
 		entry   = flag.String("entry", "", "nfc entry to join")
 		invite  = flag.String("invite", "", "invite code to join")
 		room    = flag.String("room", "", "room name to join")
+		dev     = flag.String("dev", "", "device id to summon via device tag")
 		switchTo = flag.String("switch", "", "after listen, switch to room name")
 		ogg     = flag.String("ogg", "", "ogg opus file to stream")
 		record  = flag.String("record", "", "record downlink to ogg")
@@ -368,6 +369,8 @@ func main() {
 		target = map[string]string{"kind": "invite", "code": *invite}
 	} else if *room != "" {
 		target = map[string]string{"kind": "room_name", "name": *room}
+	} else if *dev != "" {
+		target = map[string]string{"kind": "device", "device_id": *dev}
 	}
 	m := c.joinRoom(*id, target)
 	log.Printf("JOINED room=%s code=%s online=%d", m.Room.Name, m.Room.InviteCode, m.Room.OnlineCount)

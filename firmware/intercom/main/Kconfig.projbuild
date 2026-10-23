@@ -1,0 +1,53 @@
+menu "Intercom Configuration"
+
+    config INTERCOM_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "YOUR_SSID"
+        help
+            Wi-Fi STA ssid. Override at build time for the target network.
+
+    config INTERCOM_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "YOUR_PASSWORD"
+        help
+            Wi-Fi STA password.
+
+    config INTERCOM_CTRL_URL
+        string "Control WebSocket URL"
+        default "ws://10.234.79.213:8090/ws"
+        help
+            Control service endpoint, e.g. ws://<host>:8090/ws
+
+    config INTERCOM_DEVICE_TOKEN
+        string "Device token sent in hello"
+        default "dev"
+
+    config INTERCOM_TURN_URL
+        string "TURN/STUN server URL (empty = host candidates only)"
+        default "turn:10.234.79.213:3478?transport=udp"
+        help
+            ICE server URL passed to esp_peer, e.g. turn:host:3478?transport=udp
+            or stun:host:3478. Leave empty to use host candidates only.
+
+    config INTERCOM_TURN_USER
+        string "TURN username"
+        default "intercom"
+
+    config INTERCOM_TURN_PASS
+        string "TURN password"
+        default "night2026"
+
+    config INTERCOM_CMD_TARGET_KIND
+        string "Command recognition stub join target kind"
+        default "room_name"
+        help
+            Placeholder command recognizer emits a join with this target kind:
+            nfc | device | invite | room_name
+
+    config INTERCOM_CMD_TARGET_ARG
+        string "Command recognition stub join target argument"
+        default "一号房"
+        help
+            Argument for the stub join target (room name / invite code / entry id).
+
+endmenu
