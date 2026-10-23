@@ -35,22 +35,32 @@ func main() {
 	}
 	defer store.Close()
 
+	var srv *server.ControlServer
 	var media server.Media
 	if *janusURL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		jc, err := server.DialJanus(ctx, *janusURL)
-		cancel()
-		if err != nil {
-			log.Fatalf("dial janus %s: %v", *janusURL, err)
+		dial := func(ctx context.Context) (*server.JanusClient, error) {
+			jc, err := server.DialJanus(ctx, *janusURL)
+			if err == nil {
+				log.Printf("janus connected: %s", *janusURL)
+			}
+			return jc, err
 		}
-		media = server.NewJanusMedia(jc, "")
-		log.Printf("janus connected: %s", *janusURL)
+		media = server.NewLiveMedia(dial, func() {
+			if srv != nil {
+				srv.ClearAllMedia()
+			}
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if _, err := dial(ctx); err != nil {
+			log.Printf("janus initial dial failed (will retry on first use): %v", err)
+		}
+		cancel()
 	} else {
 		media = server.NewFakeMedia()
 		log.Printf("JANUS_URL unset: using fake media (protocol tests only)")
 	}
 
-	srv := server.NewControlServer(server.Config{
+	srv = server.NewControlServer(server.Config{
 		Addr:        *addr,
 		JanusURL:    *janusURL,
 		DeviceToken: *deviceToken,

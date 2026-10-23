@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -69,9 +70,11 @@ type JanusClient struct {
 	writeMu sync.Mutex
 
 	OnAsync func(sessionID, handleID int64, msg janusMsg)
+	OnDown  func() // called once when the connection is lost
 
 	keepaliveTick time.Duration
 	done          chan struct{}
+	dead          atomic.Bool
 	sessionsMu    sync.Mutex
 	sessions      map[int64]struct{}
 }
@@ -138,6 +141,9 @@ func (c *JanusClient) readLoop() {
 }
 
 func (c *JanusClient) failAll() {
+	if c.dead.CompareAndSwap(false, true) && c.OnDown != nil {
+		c.OnDown()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for tx, ch := range c.pending {
@@ -377,3 +383,73 @@ func (j *JanusMedia) Detach(ctx context.Context, p *Participant) error {
 }
 
 func (j *JanusMedia) Close() error { return j.c.conn.Close(websocket.StatusNormalClosure, "bye") }
+
+// LiveMedia wraps JanusMedia with lazy reconnect: when the Janus
+// connection drops it redials on the next call and notifies the owner
+// once so stale participants can be cleared.
+type LiveMedia struct {
+	mu     sync.Mutex
+	dial   func(context.Context) (*JanusClient, error)
+	jm     *JanusMedia
+	onDown func()
+	evtHdl func(sessionID, handleID int64, msg AsyncMsg)
+}
+
+func NewLiveMedia(dial func(context.Context) (*JanusClient, error), onDown func()) *LiveMedia {
+	return &LiveMedia{dial: dial, onDown: onDown}
+}
+
+func (l *LiveMedia) media(ctx context.Context) (*JanusMedia, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.jm != nil && !l.jm.c.dead.Load() {
+		return l.jm, nil
+	}
+	if l.jm != nil && l.onDown != nil {
+		l.onDown()
+	}
+	jc, err := l.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	l.jm = NewJanusMedia(jc, "")
+	if l.evtHdl != nil {
+		l.jm.SetEventHandler(l.evtHdl)
+	}
+	return l.jm, nil
+}
+
+func (l *LiveMedia) EnsureRoom(ctx context.Context, r int64) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.EnsureRoom(ctx, r)
+}
+func (l *LiveMedia) Join(ctx context.Context, p *Participant, r int64, d, o string) (string, error) {
+	m, err := l.media(ctx); if err != nil { return "", err }; return m.Join(ctx, p, r, d, o)
+}
+func (l *LiveMedia) ChangeRoom(ctx context.Context, p *Participant, r int64) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.ChangeRoom(ctx, p, r)
+}
+func (l *LiveMedia) SetMuted(ctx context.Context, p *Participant, muted bool) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.SetMuted(ctx, p, muted)
+}
+func (l *LiveMedia) Leave(ctx context.Context, p *Participant) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.Leave(ctx, p)
+}
+func (l *LiveMedia) Trickle(ctx context.Context, p *Participant, c *IceCandidate, done bool) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.Trickle(ctx, p, c, done)
+}
+func (l *LiveMedia) Detach(ctx context.Context, p *Participant) error {
+	m, err := l.media(ctx); if err != nil { return err }; return m.Detach(ctx, p)
+}
+func (l *LiveMedia) SetEventHandler(fn func(sessionID, handleID int64, msg AsyncMsg)) {
+	l.evtHdl = fn
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.jm != nil {
+		l.jm.SetEventHandler(fn)
+	}
+}
+func (l *LiveMedia) Close() error {
+	l.mu.Lock(); defer l.mu.Unlock()
+	if l.jm != nil { return l.jm.Close() }
+	return nil
+}

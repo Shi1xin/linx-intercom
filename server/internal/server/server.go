@@ -665,6 +665,24 @@ func (s *ControlServer) onLeave(ctx context.Context, sess *Session, m *InMessage
 	sess.send(&OutMessage{Type: "leave_result", RequestID: m.RequestID, OK: true})
 }
 
+// ClearAllMedia drops every session's media state without detaching —
+// used when the Janus connection is lost (participants die upstream).
+// Devices keep resume_room and rejoin via the normal join flow.
+func (s *ControlServer) ClearAllMedia() {
+	s.mu.Lock()
+	list := make([]*Session, 0, len(s.sessions))
+	for sess := range s.sessions {
+		list = append(list, sess)
+	}
+	s.byHandle = map[int64]*Session{}
+	s.orphanICE = map[int64][]pendingICE{}
+	s.mu.Unlock()
+	for _, sess := range list {
+		s.clearMedia(sess)
+	}
+	log.Printf("media cleared for %d sessions (janus down)", len(list))
+}
+
 func (s *ControlServer) onDisconnect(sess *Session) {
 	s.mu.Lock()
 	delete(s.sessions, sess)
