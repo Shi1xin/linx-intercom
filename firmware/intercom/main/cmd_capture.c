@@ -82,19 +82,23 @@ void cmd_capture_abort(void)
 
 bool cmd_recognize(const int16_t *pcm, int samples, cmd_result_t *out)
 {
-    /* Stub: any sufficiently long utterance maps to the configured target.
-     * Real implementation hook: run keyword/intent model here, or stream the
-     * PCM to a cloud recognizer, then fill out->kind/arg. */
-    (void)pcm;
-    if (out == NULL || samples <= 0) {
+    /* ASR not wired yet: log capture stats only and return false so the
+     * command key is a safe no-op instead of fake-switching rooms. */
+    (void)out;
+    if (pcm == NULL || samples <= 0) {
         return false;
     }
-    strlcpy(out->kind, CONFIG_INTERCOM_CMD_TARGET_KIND, sizeof(out->kind));
-    strlcpy(out->arg, CONFIG_INTERCOM_CMD_TARGET_ARG, sizeof(out->arg));
-    if (out->arg[0] == 0) {
-        return false;
+    int32_t peak = 0;
+    int64_t sq = 0;
+    for (int i = 0; i < samples; i++) {
+        int32_t v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+        if (v > peak) {
+            peak = v;
+        }
+        sq += (int64_t)pcm[i] * pcm[i];
     }
-    ESP_LOGI(TAG, "stub recognize: %d samples -> join %s:%s",
-             samples, out->kind, out->arg);
-    return true;
+    int rms = (int)(sq / samples);
+    ESP_LOGI(TAG, "cmd pcm: %d samples (%.1fs) peak=%d rms^2=%d",
+             samples, samples / (float)AUDIO_INPUT_SAMPLE_RATE, (int)peak, rms);
+    return false;
 }
