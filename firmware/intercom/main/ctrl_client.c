@@ -405,10 +405,12 @@ esp_err_t ctrl_client_init(void)
 esp_err_t ctrl_client_connect(void)
 {
     if (s_ws) {
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
         s_connected = false;
+        xSemaphoreGive(s_tx_lock);
     }
     esp_websocket_client_config_t cfg = {
         .uri = CONFIG_INTERCOM_CTRL_URL,
@@ -431,9 +433,11 @@ esp_err_t ctrl_client_disconnect(void)
 {
     if (s_ws) {
         s_connected = false;
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
+        xSemaphoreGive(s_tx_lock);
     }
     return ESP_OK;
 }

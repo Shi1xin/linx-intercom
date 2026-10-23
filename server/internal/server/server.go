@@ -75,23 +75,22 @@ func NewControlServer(cfg Config, store *Store, media Media) *ControlServer {
 func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 	if m.str("janus") != "trickle" {
 		s.mu.Lock()
-		if sess := s.byHandle[handleID]; sess != nil {
-			switch m.str("janus") {
-			case "webrtcup":
-				log.Printf("device %s: webrtc up", sess.deviceID)
-			case "hangup":
-				log.Printf("device %s: media hangup", sess.deviceID)
-				sess.mu.Lock()
-				roomID := sess.roomID
-				sess.mu.Unlock()
-				s.clearMedia(sess)
-				sess.send(&OutMessage{Type: "notify", Event: "media_lost"})
-				if roomID != 0 {
-					s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
-				}
+		sess := s.byHandle[handleID]
+		s.mu.Unlock()
+		if sess == nil {
+			return
+		}
+		switch m.str("janus") {
+		case "webrtcup":
+			log.Printf("device %s: webrtc up", sess.deviceID)
+		case "hangup":
+			log.Printf("device %s: media hangup", sess.deviceID)
+			_, roomID := s.clearMedia(sess)
+			sess.send(&OutMessage{Type: "notify", Event: "media_lost"})
+			if roomID != 0 {
+				s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
 			}
 		}
-		s.mu.Unlock()
 		return
 	}
 	var cand struct {
@@ -134,8 +133,8 @@ func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 }
 
 // AttachMCP registers the cloud MCP (SSE) endpoints on the server handler.
-func (s *ControlServer) AttachMCP(defaultTarget string) {
-	s.mcp = NewMCPAdapter(s, defaultTarget)
+func (s *ControlServer) AttachMCP(defaultTarget, token string) {
+	s.mcp = NewMCPAdapter(s, defaultTarget, token)
 }
 
 func (s *ControlServer) Handler() http.Handler {
@@ -836,6 +835,11 @@ func (s *ControlServer) onDisconnect(sess *Session) {
 	p, roomID := s.clearMedia(sess)
 	sess.mu.Lock()
 	sess.closed = true
+	for opID, ch := range sess.pendingOps { // fail in-flight ops so waiters return fast
+		ch <- &InMessage{OpID: opID, OK: false,
+			Error: &OutError{Code: "target_offline", Message: "设备连接断开"}}
+	}
+	sess.pendingOps = nil
 	sess.mu.Unlock()
 	if p != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

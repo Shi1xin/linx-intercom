@@ -211,6 +211,14 @@ static void teardown_media(void)
 
 /* ---------- MCP op lifecycle ---------- */
 
+static void mcp_op_arm_timer(void)
+{
+    if (s_op_timer) {
+        esp_timer_stop(s_op_timer);
+        esp_timer_start_once(s_op_timer, (int64_t)OP_TIMEOUT_MS * 1000);
+    }
+}
+
 static void mcp_op_cancel_timer(void)
 {
     if (s_op_timer) {
@@ -231,7 +239,9 @@ static void mcp_op_finish(bool ok, const char *result_json)
     }
     s_mcp_op.active = false;
     mcp_op_cancel_timer();
-    open_tts_window();  /* the agent's ack reply may still legitimately play */
+    if (!s_mcp_op.from_ctrl) {
+        open_tts_window();  /* the agent's ack reply may still legitimately play */
+    }
 }
 
 static void mcp_op_finish_ok_room(void)
@@ -318,6 +328,10 @@ static void capture_task(void *arg)
                 xTaskGetTickCount() - s_cmd_press_tick > pdMS_TO_TICKS(CMD_LISTEN_DELAY_MS)) {
                 s_linx_listen_sent = true;
                 linx_send_listen("start", "manual");
+                if (!s_command_active) {   /* released mid-arm: close orphan listen */
+                    s_linx_listen_sent = false;
+                    linx_send_listen("stop", "manual");
+                }
             }
             if (s_linx_listen_sent) {
                 int enc = audio_opus_encode(pcm, n, pkt, 512);
@@ -365,6 +379,16 @@ static void on_ws_connected(void)
 
 static void on_ws_disconnected(void)
 {
+    /* control channel lost: any pending op cannot resolve; answer linx ops,
+     * drop ctrl ops (their channel is the one that died) */
+    if (s_mcp_op.active) {
+        if (!s_mcp_op.from_ctrl) {
+            mcp_op_finish_err("control_offline", "control channel lost");
+        } else {
+            s_mcp_op.active = false;
+            mcp_op_cancel_timer();
+        }
+    }
     /* losing the control channel ends the room; the linx channel is
      * independent and keeps running */
     teardown_media();
@@ -391,7 +415,7 @@ static void on_join_result(app_event_t *ev)
 {
     if (!ev->flag) {
         ESP_LOGW(TAG, "join failed: %s", ev->msg ? ev->msg : "?");
-        if (s_mcp_op.active) {
+        if (s_mcp_op.active && mcp_op_is("self.intercom.join")) {
             mcp_op_finish_err("join_failed", ev->msg);
         }
         set_state(s_state_before_join);
@@ -422,7 +446,8 @@ static void on_peer_state(app_event_t *ev)
         }
     } else if (st == ESP_PEER_STATE_CONNECT_FAILED) {
         ESP_LOGW(TAG, "media connect failed");
-        if (s_mcp_op.active) {
+        if (s_mcp_op.active &&
+            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_err("media_failed", "webrtc connect failed");
         }
         if (s_state == APP_STATE_JOINING || s_state == APP_STATE_SWITCHING) {
@@ -607,6 +632,7 @@ static void on_mcp_call(app_event_t *ev)
     } else if (strcmp(tool, "self.intercom.status") == 0) {
         if (s_state == APP_STATE_TALKING) {
             s_mcp_op.active = true;
+            mcp_op_arm_timer();
             ctrl_send_room_info();
         } else {
             char js[160];
@@ -623,10 +649,15 @@ static void on_mcp_call(app_event_t *ev)
             goto done;
         }
         s_mcp_op.active = true;
+        mcp_op_arm_timer();
         ctrl_send_set_mute(cJSON_IsTrue(m));
     } else if (strcmp(tool, "self.intercom.leave") == 0) {
         s_mcp_op.active = true;
-        if (s_state == APP_STATE_TALKING || s_state == APP_STATE_COMMAND) {
+        if (s_state == APP_STATE_JOINING || s_state == APP_STATE_SWITCHING) {
+            s_mcp_op.active = false;
+            mcp_reply_now(id_raw, from_ctrl, "{\"ok\":false,\"error\":\"busy\",\"message\":\"join in flight\"}", true);
+        } else if (s_state == APP_STATE_TALKING || s_state == APP_STATE_COMMAND) {
+            mcp_op_arm_timer();
             set_state(APP_STATE_LEAVING);
             ctrl_send_leave();
         } else {
@@ -709,7 +740,9 @@ static void on_linx_disconnected(void)
     /* platform loss does not touch the room; retry in background.
      * A pending op reply is session-scoped and undeliverable — drop it so the
      * op budget is not held by a dead session. */
-    if (s_mcp_op.active) {
+    if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
+        /* linx-scoped reply is undeliverable; ctrl ops still owe the server a
+         * result on the other channel, keep them pending */
         ESP_LOGW(TAG, "linx down with pending op %s; dropping reply", s_mcp_op.name);
         s_mcp_op.active = false;
         mcp_op_cancel_timer();
@@ -747,6 +780,13 @@ static void on_linx_tts(app_event_t *ev)
 
 static void on_op_timeout(void)
 {
+    if (!s_mcp_op.active &&
+        (s_state == APP_STATE_JOINING || s_state == APP_STATE_SWITCHING)) {
+        /* non-op join in flight timed out: fall back to pre-join state */
+        ESP_LOGW(TAG, "op timeout with no pending op; unwinding state");
+        set_state(s_state_before_join);
+        return;
+    }
     if (!s_mcp_op.active) {
         return;
     }

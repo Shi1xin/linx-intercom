@@ -73,11 +73,16 @@ func run(endpoint, server, target, adminTok string) error {
 			return fmt.Errorf("read: %w", err)
 		}
 		log.Printf("mcpproxy rx %s", string(data))
-		resp := handle(data, server, target, adminTok)
+		resp, wrapped := handle(data, server, target, adminTok)
 		if resp == nil {
 			continue
 		}
-		out, _ := json.Marshal(resp)
+		var out []byte
+		if wrapped {
+			out, _ = json.Marshal(map[string]any{"type": "mcp", "payload": resp})
+		} else {
+			out, _ = json.Marshal(resp)
+		}
 		if err := conn.Write(context.Background(), websocket.MessageText, out); err != nil {
 			return fmt.Errorf("write: %w", err)
 		}
@@ -92,21 +97,23 @@ type rpcReq struct {
 	Params  json.RawMessage `json:"params"`
 }
 
-func handle(data []byte, server, target, adminTok string) any {
+func handle(data []byte, server, target, adminTok string) (any, bool) {
 	// accept raw JSON-RPC or the device-mcp wrapper {"type":"mcp","payload":{..}}
 	payload := data
 	var wrap struct {
 		Type    string          `json:"type"`
 		Payload json.RawMessage `json:"payload"`
 	}
+	wrapped := false
 	if json.Unmarshal(data, &wrap) == nil && len(wrap.Payload) > 0 {
 		payload = wrap.Payload
+		wrapped = true
 	}
 	var req rpcReq
 	if json.Unmarshal(payload, &req) != nil || req.Method == "" {
-		return nil
+		return nil, wrapped
 	}
-	reply := func(result any, rpcErr any) map[string]any {
+	reply := func(result any, rpcErr any) (map[string]any, bool) {
 		r := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(req.ID)}
 		if len(req.ID) == 0 {
 			r["id"] = json.RawMessage("0")
@@ -116,7 +123,7 @@ func handle(data []byte, server, target, adminTok string) any {
 		} else {
 			r["result"] = result
 		}
-		return r
+		return r, wrapped
 	}
 	switch req.Method {
 	case "initialize":
@@ -129,7 +136,7 @@ func handle(data []byte, server, target, adminTok string) any {
 		if req.Method == "tools/list" {
 			return reply(map[string]any{"tools": tools}, nil)
 		}
-		return nil
+		return nil, wrapped
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`
@@ -143,7 +150,7 @@ func handle(data []byte, server, target, adminTok string) any {
 		}, nil)
 	default:
 		if len(req.ID) == 0 {
-			return nil
+			return nil, wrapped
 		}
 		return reply(nil, map[string]any{"code": -32601, "message": "unsupported " + req.Method})
 	}

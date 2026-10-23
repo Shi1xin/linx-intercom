@@ -205,11 +205,12 @@ func (d *softDevice) opJoin(target map[string]string) (map[string]any, error) {
 		}
 	}
 	cf, err := d.ctrl.confirm()
-	if err != nil {
-		return nil, err
+	if err == nil && !cf.OK {
+		err = fmt.Errorf("confirm_failed: %+v", cf.Error)
 	}
-	if !cf.OK {
-		return nil, fmt.Errorf("confirm_failed: %+v", cf.Error)
+	if err != nil {
+		d.setMedia(nil) // don't keep streaming into a room the op reported as failed
+		return nil, err
 	}
 	d.mu.Lock()
 	d.mode = "intercom"

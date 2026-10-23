@@ -296,8 +296,10 @@ static void handle_text(const char *data, int len)
         bool start = cJSON_IsString(st) && strcmp(st->valuestring, "start") == 0;
         bool stop = cJSON_IsString(st) &&
             (strcmp(st->valuestring, "stop") == 0 || strcmp(st->valuestring, "sentence_start") == 0);
-        app_post(APP_EV_LINX_TTS, NULL, NULL, 0, start);
         (void)stop;
+        /* xiaozhi sends start -> sentence_start* -> audio -> stop: treat
+         * sentence_start as "still playing" so the window stays open */
+        app_post(APP_EV_LINX_TTS, NULL, NULL, 0, start || strcmp(st->valuestring, "sentence_start") == 0);
     } else if (strcmp(t, "abort") == 0) {
         app_post(APP_EV_LINX_ABORT, NULL, NULL, 0, false);
     } else if (strcmp(t, "goodbye") == 0) {
@@ -379,10 +381,12 @@ esp_err_t linx_client_connect(const char *url, const char *token,
                               const char *device_id, const char *client_id)
 {
     if (s_ws) {
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY); /* in-flight senders see NULL */
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
         s_connected = false;
+        xSemaphoreGive(s_tx_lock);
     }
     strlcpy(s_url, url, sizeof(s_url));
     strlcpy(s_token, token, sizeof(s_token));
@@ -427,9 +431,11 @@ esp_err_t linx_client_disconnect(void)
 {
     if (s_ws) {
         s_connected = false;
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
+        xSemaphoreGive(s_tx_lock);
     }
     return ESP_OK;
 }

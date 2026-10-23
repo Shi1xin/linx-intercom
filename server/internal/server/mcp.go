@@ -27,14 +27,23 @@ type mcpSession struct {
 type MCPAdapter struct {
 	srv           *ControlServer
 	defaultTarget string // fallback target device id when header+arg absent
+	token         string // when set, /mcp requires Authorization: Bearer or ?token=
 
 	mu       sync.Mutex
 	sessions map[string]*mcpSession
 	seq      int64
 }
 
-func NewMCPAdapter(srv *ControlServer, defaultTarget string) *MCPAdapter {
-	return &MCPAdapter{srv: srv, defaultTarget: defaultTarget, sessions: map[string]*mcpSession{}}
+func NewMCPAdapter(srv *ControlServer, defaultTarget, token string) *MCPAdapter {
+	return &MCPAdapter{srv: srv, defaultTarget: defaultTarget, token: token, sessions: map[string]*mcpSession{}}
+}
+
+func (a *MCPAdapter) authorized(r *http.Request) bool {
+	if a.token == "" {
+		return true
+	}
+	return r.URL.Query().Get("token") == a.token ||
+		r.Header.Get("Authorization") == "Bearer "+a.token
 }
 
 var cloudTools = []map[string]any{
@@ -69,6 +78,10 @@ func (a *MCPAdapter) Register(mux *http.ServeMux) {
 }
 
 func (a *MCPAdapter) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if !a.authorized(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
@@ -95,6 +108,8 @@ func (a *MCPAdapter) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(w, "event: endpoint\ndata: /mcp/message?sessionId=%s\n\n", id)
 	fl.Flush()
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
 	for {
 		select {
 		case data := <-s.out:
@@ -102,7 +117,7 @@ func (a *MCPAdapter) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		case <-r.Context().Done():
 			return
-		case <-time.After(30 * time.Second):
+		case <-tick.C:
 			fmt.Fprintf(w, ": keepalive\n\n")
 			fl.Flush()
 		}
@@ -110,6 +125,10 @@ func (a *MCPAdapter) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *MCPAdapter) handleMessage(w http.ResponseWriter, r *http.Request) {
+	if !a.authorized(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
@@ -136,6 +155,9 @@ func (a *MCPAdapter) handleMessage(w http.ResponseWriter, r *http.Request) {
 	srcAgent := r.Header.Get("X-Linx-Agent-Id")
 	w.WriteHeader(http.StatusAccepted)
 	w.Write([]byte("Accepted"))
+	if fl, ok := w.(http.Flusher); ok {
+		fl.Flush() // release the POST immediately; result rides the SSE stream
+	}
 	resp := a.dispatch(&req, srcDevice, srcAgent)
 	if resp != nil {
 		data, _ := json.Marshal(resp)
@@ -255,10 +277,8 @@ func (a *MCPAdapter) callTool(req *struct {
 	defer cancel()
 	res, err := a.srv.DispatchOp(ctx, target, op, arg, muted)
 	if err != nil {
-		var oe *OutError
 		msg := err.Error()
 		if e, ok2 := err.(*OutError); ok2 {
-			_ = oe
 			msg = e.Code + ": " + e.Message
 		}
 		return toolErr(msg)
