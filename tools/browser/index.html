@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>灵矽同频 · 浏览器测试端</title>
+<style>
+body { font-family: monospace; max-width: 720px; margin: 24px auto; padding: 0 12px; background:#111; color:#ddd }
+input,select,button { font: inherit; margin: 2px; background:#222; color:#ddd; border:1px solid #444; padding:4px 8px }
+button { cursor:pointer }
+#log { height: 300px; overflow-y: scroll; border: 1px solid #444; padding: 8px; white-space: pre-wrap; font-size:12px }
+.row { margin: 6px 0 }
+.state { color:#7f7 }
+.err { color:#f77 }
+audio { width: 100% }
+</style>
+</head>
+<body>
+<h3>灵矽同频 · 浏览器测试端</h3>
+<div class="row">服务 <input id="server" size="28"> 身份 <input id="devid" size="20" value="browser-test-1"> <button id="btnConn">连接</button> <span id="status" class="state">离线</span></div>
+<div class="row">
+  <select id="kind">
+    <option value="invite">邀请码</option>
+    <option value="nfc">NFC 标签</option>
+    <option value="room_name">房间名</option>
+    <option value="device">设备标签</option>
+  </select>
+  <input id="target" size="20" placeholder="值">
+  <button id="btnJoin">入房/切房</button>
+  <button id="btnLeave">退出房间</button>
+</div>
+<div class="row">
+  <button id="btnInfo">房间信息</button>
+  <button id="btnMute">静音</button>
+  <button id="btnUnmute">恢复通话</button>
+  <label><input type="checkbox" id="fakeAudio"> 用正弦波代替麦克风</label>
+</div>
+<div class="row">房间：<span id="room" class="state">—</span></div>
+<audio id="remote" autoplay></audio>
+<div id="log"></div>
+<script src="client.js"></script>
+</body>
+</html>
