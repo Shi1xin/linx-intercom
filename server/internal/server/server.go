@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,6 +32,7 @@ type ControlServer struct {
 	byHandle  map[int64]*Session
 	orphanICE map[int64][]pendingICE
 	mcp       *MCPAdapter
+	opSeq     uint64
 }
 
 type Session struct {
@@ -683,7 +685,7 @@ func (s *ControlServer) DispatchOp(ctx context.Context, deviceID, op, arg string
 	if sess == nil {
 		return nil, &OutError{Code: "target_offline", Message: "目标设备离线"}
 	}
-	opID := fmt.Sprintf("op%d", time.Now().UnixNano())
+	opID := fmt.Sprintf("op%d-%d", time.Now().UnixNano(), atomic.AddUint64(&s.opSeq, 1))
 	ch := make(chan *InMessage, 1)
 	sess.mu.Lock()
 	if sess.pendingOps == nil {

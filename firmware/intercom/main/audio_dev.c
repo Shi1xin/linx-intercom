@@ -27,6 +27,7 @@ typedef struct {
 } rx_pkt_t;
 
 static int s_rx_src = AUDIO_SRC_LINX;
+static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
 
 /* tone frames carry src==AUDIO_SRC_TONE and data[0..1]=freq*10, [2..3]=ms.
  * The playback task synthesizes them directly at the output rate, so tones
@@ -132,11 +133,15 @@ void audio_rx_set_source(int src)
     if (src != s_rx_src) {
         s_rx_src = src;
         audio_rx_flush();          /* drop the other source's stale frames */
-        audio_decoder_reset();     /* opus decoder state is per-stream */
+        s_dec_reset_pending = true; /* decoder reset runs on the playback task:
+                                     * resetting here would race an in-flight
+                                     * audio_opus_decode() on the other core */
     }
 }
 
 int audio_rx_current_source(void) { return s_rx_src; }
+
+void audio_rx_mark_decoder_reset(void) { s_dec_reset_pending = true; }
 
 static void audio_rx_enqueue_tagged(int src, const uint8_t *data, int size)
 {
@@ -237,6 +242,10 @@ static void playback_task(void *arg)
         }
         if (pkt.src != s_rx_src) {
             continue;   /* queued before a source switch; decoder never sees it */
+        }
+        if (s_dec_reset_pending) {   /* same-thread reset: safe vs decode */
+            s_dec_reset_pending = false;
+            audio_decoder_reset();
         }
         int dec_samples = audio_opus_decode(pkt.data, pkt.len, pcm48, sizeof(pcm48) / sizeof(pcm48[0]));
         if (dec_samples <= 0) {

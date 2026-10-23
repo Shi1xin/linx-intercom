@@ -67,7 +67,9 @@ static char s_linx_client_id[48];
 /* auto-rejoin after media_lost: bounded retries so an empty room does not
  * thrash ICE every Janus keepalive cycle */
 static int  s_rejoin_count;
+static int64_t s_last_rejoin_us;
 #define MAX_MEDIA_REJOIN 5
+#define REJOIN_DECAY_US  (600 * 1000 * 1000)  /* 10min clean -> budget recovers */
 static int16_t s_pcm_silence[MIC_FRAME_SAMPLES]; /* zeros: keepalive payload */
 
 /* audible cue so cloud/NFC takeovers give room-entry feedback even when no
@@ -183,6 +185,12 @@ static void start_join_ex(const char *kind, const char *arg, bool auto_rejoin)
 {
     if (!auto_rejoin) {
         s_rejoin_count = 0;
+    } else {
+        int64_t now = esp_timer_get_time();
+        if (now - s_last_rejoin_us > REJOIN_DECAY_US) {
+            s_rejoin_count = 0;   /* long stable run: decay the budget */
+        }
+        s_last_rejoin_us = now;
     }
     if (arg == NULL || arg[0] == 0 || kind == NULL) {
         return;
@@ -227,7 +235,7 @@ static void teardown_media(void)
     cmd_capture_abort();
     rtc_peer_stop();
     audio_rx_flush();
-    audio_decoder_reset();
+    audio_rx_mark_decoder_reset();  /* playback task does it (decode-safety) */
 }
 
 /* ---------- MCP op lifecycle ---------- */
@@ -363,6 +371,7 @@ static void capture_task(void *arg)
             continue;
         }
         if (s_state != APP_STATE_TALKING || !rtc_peer_is_connected()) {
+            was_connected = false;
             continue;   /* uplink only after confirm lands us in TALKING */
         }
         if (s_muted) {
@@ -372,7 +381,7 @@ static void capture_task(void *arg)
             if (enc > 0 && (dbg % 25 == 0)) {   /* ~500ms cadence */
                 rtc_peer_send_audio(pkt, enc, pts);
             }
-            pts += n;
+            pts += RTP_PTS_STEP;   /* keep the wire clock at 48k even while muted */
             continue;
         }
         if (!was_connected) {
@@ -446,7 +455,8 @@ static void on_join_result(app_event_t *ev)
     if (!ev->flag) {
         ESP_LOGW(TAG, "join failed: %s", ev->msg ? ev->msg : "?");
         play_tone(220, 250);   /* failure cue */
-        if (s_mcp_op.active && mcp_op_is("self.intercom.join")) {
+        if (s_mcp_op.active &&
+            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_err("join_failed", ev->msg);
         }
         set_state(s_state_before_join);
@@ -461,7 +471,7 @@ static void on_join_result(app_event_t *ev)
     } else {
         /* media reused: flush downlink and confirm */
         audio_rx_flush();
-        audio_decoder_reset();
+        audio_rx_mark_decoder_reset();
         ctrl_send_confirm();
     }
 }
@@ -521,7 +531,13 @@ static void on_confirm_result(app_event_t *ev)
         if (s_mcp_op.active) {
             mcp_op_finish_err("confirm_failed", "confirm rejected");
         }
-        set_state(APP_STATE_IDLE);
+        /* the Janus leg may still be attached on a failed switch: restore the
+         * pre-join state and drop residual media so reported state matches
+         * actual media */
+        teardown_media();
+        set_state(s_state_before_join == APP_STATE_JOINING ||
+                  s_state_before_join == APP_STATE_SWITCHING ?
+                  APP_STATE_IDLE : s_state_before_join);
     }
 }
 
@@ -589,7 +605,12 @@ static void on_notify(app_event_t *ev)
     } else if (strcmp(event, "media_lost") == 0) {
         /* janus hung up the leg (e.g. keepalive in a silent room). The
          * server cleared the session but kept the resume target: drop the
-         * dead peer and rejoin by room name if we were in a room. */
+         * dead peer and rejoin by room name if we were in a room. Guard on
+         * TALKING so a peer DISCONNECTED that already started a rejoin does
+         * not trigger a second one. */
+        if (s_state != APP_STATE_TALKING) {
+            return;
+        }
         ESP_LOGW(TAG, "media lost, rejoin attempt %d", s_rejoin_count);
         teardown_media();
         set_state(APP_STATE_IDLE);

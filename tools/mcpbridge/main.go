@@ -210,7 +210,10 @@ func callTool(server, target, adminTok, name string, args map[string]any) (strin
 	if res.StatusCode != 200 {
 		return string(out), true
 	}
-	if json.Unmarshal(out, &resObj) == nil && !resObj.OK {
+	if json.Unmarshal(out, &resObj) != nil {
+		return string(out), true  /* unparsable body = upstream error page */
+	}
+	if !resObj.OK {
 		return string(out), true
 	}
 	return string(out), false

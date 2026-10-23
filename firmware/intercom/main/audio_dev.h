@@ -27,6 +27,7 @@ void audio_rx_enqueue_src(int src, const uint8_t *data, int size);
 int  audio_rx_current_source(void);
 void audio_rx_play_tone(int freq_hz, int ms);
 void audio_decoder_reset(void);
+void audio_rx_mark_decoder_reset(void);
 
 /* Drop all queued downlink frames (used on room switch with need_media=false
  * and on peer teardown). */
