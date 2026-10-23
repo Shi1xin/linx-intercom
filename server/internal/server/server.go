@@ -44,8 +44,14 @@ type Session struct {
 	participant   *Participant
 	roomID        int64
 	pendingRoomID int64
+	pendingICE    []pendingICE
 	joinResps     map[string]*OutMessage // request_id dedup
 	closed        bool
+}
+
+type pendingICE struct {
+	cand      *IceCandidate
+	completed bool
 }
 
 func NewControlServer(cfg Config, store *Store, media Media) *ControlServer {
@@ -483,20 +489,29 @@ func (s *ControlServer) onSDP(ctx context.Context, sess *Session, m *InMessage) 
 	}
 	sess.mu.Lock()
 	sess.participant = p
+	queued := sess.pendingICE
+	sess.pendingICE = nil
 	sess.mu.Unlock()
 	s.mu.Lock()
 	s.byHandle[p.HandleID] = sess
 	s.mu.Unlock()
 	sess.send(&OutMessage{Type: "sdp", RequestID: m.RequestID, Jsep: "answer", SDP: answer})
+	for _, q := range queued {
+		_ = s.media.Trickle(ctx, p, q.cand, q.completed)
+	}
 }
 
 func (s *ControlServer) onICE(ctx context.Context, sess *Session, m *InMessage) {
 	sess.mu.Lock()
 	p := sess.participant
-	sess.mu.Unlock()
 	if p == nil {
+		if len(sess.pendingICE) < 64 {
+			sess.pendingICE = append(sess.pendingICE, pendingICE{cand: m.Candidate, completed: m.Completed})
+		}
+		sess.mu.Unlock()
 		return
 	}
+	sess.mu.Unlock()
 	_ = s.media.Trickle(ctx, p, m.Candidate, m.Completed)
 }
 
@@ -597,6 +612,7 @@ func (s *ControlServer) clearMedia(sess *Session) (*Participant, int64) {
 	sess.participant = nil
 	sess.roomID = 0
 	sess.pendingRoomID = 0
+	sess.pendingICE = nil
 	sess.joinResps = map[string]*OutMessage{}
 	sess.mu.Unlock()
 	if p != nil {
