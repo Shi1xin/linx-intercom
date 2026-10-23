@@ -31,6 +31,7 @@ type ControlServer struct {
 	sessions  map[*Session]struct{}
 	byDevice  map[string]*Session
 	byHandle  map[int64]*Session
+	orphanICE map[int64][]pendingICE
 }
 
 type Session struct {
@@ -45,6 +46,8 @@ type Session struct {
 	roomID        int64
 	pendingRoomID int64
 	pendingICE    []pendingICE
+	janusICE      []pendingICE
+	answerSent    bool
 	joinResps     map[string]*OutMessage // request_id dedup
 	closed        bool
 }
@@ -62,6 +65,7 @@ func NewControlServer(cfg Config, store *Store, media Media) *ControlServer {
 		sessions: map[*Session]struct{}{},
 		byDevice: map[string]*Session{},
 		byHandle: map[int64]*Session{},
+		orphanICE: map[int64][]pendingICE{},
 	}
 	media.SetEventHandler(s.onMediaEvent)
 	return s
@@ -69,32 +73,55 @@ func NewControlServer(cfg Config, store *Store, media Media) *ControlServer {
 
 // onMediaEvent routes async Janus frames (trickle, webrtcup, hangup) to sessions.
 func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
-	s.mu.Lock()
-	sess := s.byHandle[handleID]
-	s.mu.Unlock()
-	if sess == nil {
+	if m.str("janus") != "trickle" {
+		s.mu.Lock()
+		if sess := s.byHandle[handleID]; sess != nil {
+			switch m.str("janus") {
+			case "webrtcup":
+				log.Printf("device %s: webrtc up", sess.deviceID)
+			case "hangup":
+				log.Printf("device %s: media hangup", sess.deviceID)
+			}
+		}
+		s.mu.Unlock()
 		return
 	}
-	switch m.str("janus") {
-	case "trickle":
-		var cand struct {
-			Candidate     string `json:"candidate"`
-			SDPMid        string `json:"sdpMid"`
-			SDPMLineIndex int    `json:"sdpMLineIndex"`
-			Completed     bool   `json:"completed"`
+	var cand struct {
+		Candidate     string `json:"candidate"`
+		SDPMid        string `json:"sdpMid"`
+		SDPMLineIndex int    `json:"sdpMLineIndex"`
+		Completed     bool   `json:"completed"`
+	}
+	_ = json.Unmarshal(m["candidate"], &cand)
+	q := pendingICE{completed: cand.Completed}
+	if !cand.Completed && cand.Candidate != "" {
+		q.cand = &IceCandidate{
+			Candidate: cand.Candidate, SDPMid: cand.SDPMid, SDPMLineIndex: cand.SDPMLineIndex,
 		}
-		_ = json.Unmarshal(m["candidate"], &cand)
-		if cand.Completed {
-			sess.send(&OutMessage{Type: "ice", Completed: true})
-		} else if cand.Candidate != "" {
-			sess.send(&OutMessage{Type: "ice", Candidate: &IceCandidate{
-				Candidate: cand.Candidate, SDPMid: cand.SDPMid, SDPMLineIndex: cand.SDPMLineIndex,
-			}})
+	} else if !cand.Completed {
+		return
+	}
+	s.mu.Lock()
+	sess := s.byHandle[handleID]
+	if sess == nil {
+		if len(s.orphanICE[handleID]) < 64 {
+			s.orphanICE[handleID] = append(s.orphanICE[handleID], q)
 		}
-	case "webrtcup":
-		log.Printf("device %s: webrtc up", sess.deviceID)
-	case "hangup":
-		log.Printf("device %s: media hangup", sess.deviceID)
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	sess.mu.Lock()
+	if !sess.answerSent {
+		sess.janusICE = append(sess.janusICE, q)
+		sess.mu.Unlock()
+		return
+	}
+	sess.mu.Unlock()
+	if q.completed {
+		sess.send(&OutMessage{Type: "ice", Completed: true})
+	} else {
+		sess.send(&OutMessage{Type: "ice", Candidate: q.cand})
 	}
 }
 
@@ -487,15 +514,32 @@ func (s *ControlServer) onSDP(ctx context.Context, sess *Session, m *InMessage) 
 			Error: &OutError{Code: "media_failed", Message: err.Error()}})
 		return
 	}
+	// register handle and drain any candidates that raced ahead of us
+	s.mu.Lock()
+	s.byHandle[p.HandleID] = sess
+	orphans := s.orphanICE[p.HandleID]
+	delete(s.orphanICE, p.HandleID)
+	s.mu.Unlock()
+
+	// send answer then queued janus candidates under sess.mu so a racing
+	// trickle keeps wire order: sdp always precedes forwarded candidates
 	sess.mu.Lock()
 	sess.participant = p
 	queued := sess.pendingICE
 	sess.pendingICE = nil
+	jq := append(orphans, sess.janusICE...)
+	sess.janusICE = nil
+	if err := sess.send(&OutMessage{Type: "sdp", RequestID: m.RequestID, Jsep: "answer", SDP: answer}); err == nil {
+		sess.answerSent = true
+	}
+	for _, q := range jq {
+		if q.completed {
+			sess.send(&OutMessage{Type: "ice", Completed: true})
+		} else {
+			sess.send(&OutMessage{Type: "ice", Candidate: q.cand})
+		}
+	}
 	sess.mu.Unlock()
-	s.mu.Lock()
-	s.byHandle[p.HandleID] = sess
-	s.mu.Unlock()
-	sess.send(&OutMessage{Type: "sdp", RequestID: m.RequestID, Jsep: "answer", SDP: answer})
 	for _, q := range queued {
 		_ = s.media.Trickle(ctx, p, q.cand, q.completed)
 	}
@@ -616,6 +660,8 @@ func (s *ControlServer) clearMedia(sess *Session) (*Participant, int64) {
 	sess.roomID = 0
 	sess.pendingRoomID = 0
 	sess.pendingICE = nil
+	sess.janusICE = nil
+	sess.answerSent = false
 	sess.joinResps = map[string]*OutMessage{}
 	sess.mu.Unlock()
 	if p != nil {

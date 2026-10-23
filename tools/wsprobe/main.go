@@ -68,7 +68,33 @@ type client struct {
 	rxPkts atomic.Int64
 	rxBytes atomic.Int64
 	connected atomic.Bool
+	remoteDesc atomic.Bool
+	pendingICE []webrtc.ICECandidateInit
+	iceMu      sync.Mutex
 	rec *oggwriter.OggWriter
+}
+
+func (c *client) addRemoteCandidate(cd webrtc.ICECandidateInit) {
+	c.iceMu.Lock()
+	defer c.iceMu.Unlock()
+	if !c.remoteDesc.Load() {
+		c.pendingICE = append(c.pendingICE, cd)
+		return
+	}
+	_ = c.pc.AddICECandidate(cd)
+}
+
+func (c *client) setRemoteDescription(desc webrtc.SessionDescription) {
+	if err := c.pc.SetRemoteDescription(desc); err != nil {
+		log.Printf("set remote: %v", err)
+	}
+	c.iceMu.Lock()
+	c.remoteDesc.Store(true)
+	for _, cd := range c.pendingICE {
+		_ = c.pc.AddICECandidate(cd)
+	}
+	c.pendingICE = nil
+	c.iceMu.Unlock()
 }
 
 func (c *client) send(m msg) {
@@ -116,7 +142,7 @@ func (c *client) readLoop() {
 		switch m.Type {
 		case "sdp":
 			if m.Jsep == "answer" && c.pc != nil {
-				_ = c.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: m.SDP})
+				c.setRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: m.SDP})
 			}
 		case "ice":
 			if m.Completed || m.Candidate == nil || c.pc == nil {
@@ -124,7 +150,7 @@ func (c *client) readLoop() {
 			}
 			mid := m.Candidate.SDPMid
 			mli := uint16(m.Candidate.SDPMLineIndex)
-			_ = c.pc.AddICECandidate(webrtc.ICECandidateInit{
+			c.addRemoteCandidate(webrtc.ICECandidateInit{
 				Candidate: m.Candidate.Candidate, SDPMid: &mid, SDPMLineIndex: &mli,
 			})
 		case "notify":

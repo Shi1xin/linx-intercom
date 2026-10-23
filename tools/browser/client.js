@@ -10,6 +10,7 @@ const log = (s, cls) => {
 };
 
 let ws = null, pc = null, localStream = null, reqSeq = 0, mediaReady = false;
+let remoteDescSet = false, pendingIce = [];
 let currentRoom = null;
 
 function req(prefix) { return `${prefix}${++reqSeq}`; }
@@ -37,11 +38,17 @@ function onMsg(m) {
       if (m.need_media) startMedia(); else { clearPlayback(); send({ type: "confirm", request_id: req("c") }); }
       break;
     case "sdp":
-      if (m.jsep === "answer") pc.setRemoteDescription({ type: "answer", sdp: m.sdp });
+      if (m.jsep === "answer") {
+        pc.setRemoteDescription({ type: "answer", sdp: m.sdp }).then(() => {
+          remoteDescSet = true;
+          pendingIce.forEach(c => pc.addIceCandidate(c));
+          pendingIce = [];
+        });
+      }
       break;
     case "ice":
-      if (m.completed) pc.addIceCandidate(null);
-      else if (m.candidate) pc.addIceCandidate(m.candidate);
+      if (m.completed) { if (remoteDescSet) pc.addIceCandidate(null); }
+      else if (m.candidate) { remoteDescSet ? pc.addIceCandidate(m.candidate) : pendingIce.push(m.candidate); }
       break;
     case "confirm_result":
       if (m.ok) { currentRoom = m.room; $("room").textContent = `${m.room.name}（邀请码 ${m.room.invite_code}，在线 ${m.room.online_count}）`; }
@@ -95,6 +102,8 @@ function clearPlayback() { const a = $("remote"); if (a.srcObject) { a.srcObject
 
 function cleanup() {
   mediaReady = false;
+  remoteDescSet = false;
+  pendingIce = [];
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   if (pc) { pc.close(); pc = null; }
   clearPlayback();

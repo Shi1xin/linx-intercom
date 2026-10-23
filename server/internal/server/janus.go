@@ -132,7 +132,7 @@ func (c *JanusClient) readLoop() {
 			continue
 		}
 		if c.OnAsync != nil {
-			go c.OnAsync(m.int("session_id"), m.int("sender"), m)
+			c.OnAsync(m.int("session_id"), m.int("sender"), m)
 		}
 	}
 }
