@@ -1,0 +1,17 @@
+general: {
+	json = "indented"
+	ws = true
+	ws_port = 8188
+	wss = false
+	pingpong_trigger = 30
+	pingpong_timeout = 15
+}
+admin: {
+	admin_ws = true
+	admin_ws_port = 7188
+	admin_wss = false
+}
+cors: {
+}
+certificates: {
+}
