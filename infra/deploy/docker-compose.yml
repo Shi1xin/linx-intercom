@@ -1,0 +1,48 @@
+# 灵矽同频 backend-cn 部署配置（本轮：配置+只读诊断，未上线）
+# 目标：intercom.lingxiwmp.qiniu.com，WSS 经 openresty 反代，媒体走 UDP
+#
+# 需对外端口：
+#   443        — openresty 反代 wss://.../janus 与 wss://.../ws
+#   3478/udp   — coturn
+#   40000-40100/udp — Janus RTP 媒体段（janus.jcfg media.rtp_port_range）
+#   49160-49200/udp — coturn 中继段
+
+services:
+  janus:
+    image: canyan/janus-gateway:latest
+    network_mode: host
+    volumes:
+      - ./janus:/usr/local/etc/janus:ro
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--listening-port=3478"
+      - "--realm=intercom.lingxiwmp.qiniu.com"
+      - "--user=${TURN_USER:-intercom}:${TURN_PASS:?set TURN_PASS}"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--external-ip=111.62.241.119"
+      - "--fingerprint"
+      - "--lt-cred-mech"
+
+  control:
+    image: intercom-control:latest   # 由 server/Dockerfile 构建
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      ADDR: "127.0.0.1:8090"
+      JANUS_URL: "ws://127.0.0.1:8188"
+      DB_PATH: "/data/intercom.db"
+      DEVICE_TOKEN: "${DEVICE_TOKEN:?set DEVICE_TOKEN}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN}"
+    volumes:
+      - intercom-data:/data
+
+volumes:
+  intercom-data:
