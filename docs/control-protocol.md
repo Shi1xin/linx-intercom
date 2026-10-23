@@ -109,3 +109,26 @@
 | 切房 | `join` → `join_result(need_media:false)` → `confirm` |
 | 恢复 | 断线重连后 `hello`，`resume_room` 非空则自动 `join` 该房间 |
 | 退出 | `leave` 后回到待机 |
+
+## 服务端主动操作（云端 MCP / 管理面）
+
+云端 MCP 调用和 `/admin/op` 统一走 `op` 下投递，设备执行路径与本地入房完全一致，结果经 `op_result` 回报。
+
+```json
+← {"type":"op","op_id":"op1","op":"join","op_arg":"468911"}
+← {"type":"op","op_id":"op2","op":"switch","op_arg":"三号房"}
+← {"type":"op","op_id":"op3","op":"set_mute","mute":true}
+← {"type":"op","op_id":"op4","op":"status"}
+← {"type":"op","op_id":"op5","op":"leave"}
+
+→ {"type":"op_result","op_id":"op1","ok":true,
+   "message":"{\"ok\":true,\"mode\":\"intercom\",\"room\":\"二号房\",\"invite_code\":\"468911\",\"online_count\":1,\"muted\":false}"}
+```
+
+`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`。设备侧对 join/switch 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
+
+云端入口：
+
+- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析
+- `POST /admin/op`：`{"device_id","op","arg","muted"}` → 同步返回设备 `op_result`；受 `-admin-token` 保护
+- `tools/mcpbridge`：连出平台 `/v1/mcpproxy/connect?token=…`（官方反向通道），JSON-RPC 译为 `/admin/op`
