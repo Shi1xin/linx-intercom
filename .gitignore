@@ -13,3 +13,4 @@ server/coverage/
 infra/data/
 artifacts/
 /.local/
+tools/wsprobe/wsprobe

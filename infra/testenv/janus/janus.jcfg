@@ -1,0 +1,34 @@
+general: {
+	configs_folder = "/usr/local/etc/janus"
+	plugins_folder = "/usr/local/lib/janus/plugins"
+	transports_folder = "/usr/local/lib/janus/transports"
+	events_folder = "/usr/local/lib/janus/eventhandlers"
+	loggers_folder = "/usr/local/lib/janus/loggers"
+	debug_level = 4
+	debug_timestamps = true
+	debug_colors = false
+	admin_secret = "intercomnight"
+	session_timeout = 60
+}
+certificates: {
+}
+media: {
+	ipv6 = false
+	rtp_port_range = "40000-40100"
+	dtls_timeout = 5000
+}
+nat: {
+	nice_debug = false
+	full_trickle = true
+	ice_lite = true
+	ice_tcp = false
+	ice_ignore_list = "vmnet,docker,virbr,veth,br-,Mihomo"
+}
+plugins: {
+}
+transports: {
+}
+events: {
+}
+loggers: {
+}

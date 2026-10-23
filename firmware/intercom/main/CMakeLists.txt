@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "wifi_sta.c"
+        "ctrl_client.c"
+        "rtc_peer.c"
+        "audio_dev.c"
+        "audio_codec.c"
+        "audio_proc.c"
+        "cmd_input.c"
+        "cmd_capture.c"
+        "nvs_store.c"
+    INCLUDE_DIRS
+        "."
+    PRIV_REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        esp_websocket_client
+        json
+        driver
+        esp_timer
+        esp_common
+)
