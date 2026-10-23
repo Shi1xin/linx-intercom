@@ -259,8 +259,9 @@ static void dispatch_message(cJSON *root)
         app_post_str(APP_EV_NOTIFY, cJSON_IsString(ev) ? ev->valuestring : NULL,
                      m2, 0, is_name);
     } else if (strcmp(t, "error") == 0) {
-        cJSON *code = cJSON_GetObjectItem(root, "code");
-        cJSON *msg = cJSON_GetObjectItem(root, "message");
+        cJSON *e = cJSON_GetObjectItem(root, "error");
+        cJSON *code = cJSON_IsObject(e) ? cJSON_GetObjectItem(e, "code") : NULL;
+        cJSON *msg = cJSON_IsObject(e) ? cJSON_GetObjectItem(e, "message") : NULL;
         post2(APP_EV_ERROR_MSG, cJSON_IsString(code) ? code : NULL,
               cJSON_IsString(msg) ? msg : NULL, 0, false);
     } else {
@@ -345,6 +346,7 @@ esp_err_t ctrl_client_connect(void)
         .buffer_size = 4096,
         .disable_auto_reconnect = true, /* we manage reconnect via app timer */
         .network_timeout_ms = 10000,
+        .ping_interval_sec = 30,
         .task_stack = 6144,
         .task_prio = 8,
     };

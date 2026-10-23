@@ -17,7 +17,7 @@ var cnUnits = []string{"", "十"}
 
 // RoomName renders ids 1..999 as 一号房..九百九十九号房.
 func RoomName(id int64) string {
-	if id <= 0 {
+	if id <= 0 || id > 999 {
 		return fmt.Sprintf("%d号房", id)
 	}
 	var b strings.Builder

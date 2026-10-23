@@ -12,7 +12,7 @@ services:
     image: canyan/janus-gateway:latest
     network_mode: host
     volumes:
-      - ./janus:/usr/local/etc/janus:ro
+      - ./:/usr/local/etc/janus:ro
     restart: unless-stopped
 
   coturn:

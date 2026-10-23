@@ -137,6 +137,7 @@ static void capture_task(void *arg)
     int16_t *pcm = heap_caps_malloc(MIC_FRAME_SAMPLES * sizeof(int16_t), MALLOC_CAP_8BIT);
     uint8_t *pkt = heap_caps_malloc(512, MALLOC_CAP_8BIT);
     uint32_t pts = 0;
+    bool was_connected = false;
     ESP_LOGI(TAG, "capture task up");
     int dbg = 0;
     for (;;) {
@@ -158,7 +159,12 @@ static void capture_task(void *arg)
             continue;
         }
         if (!rtc_peer_is_connected() || s_muted) {
+            was_connected = false;
             continue;
+        }
+        if (!was_connected) {
+            was_connected = true;
+            pts = 0; /* fresh peer: restart RTP timestamps */
         }
         audio_proc_mic(pcm, n);
         int enc = audio_opus_encode(pcm, n, pkt, 512);
@@ -217,7 +223,8 @@ static void on_join_result(app_event_t *ev)
     }
     ESP_LOGI(TAG, "joined room %s need_media=%d", ev->msg ? ev->msg : "?", ev->arg0);
     if (ev->arg0) {
-        /* need media: bring peer up and produce an offer */
+        /* need media: rebuild a possibly-dead peer, then offer */
+        rtc_peer_stop();
         rtc_peer_start();
         rtc_peer_create_offer();
     } else {
@@ -286,7 +293,7 @@ static void on_notify(app_event_t *ev)
     ESP_LOGI(TAG, "notify %s room=%s", event, room ? room : "-");
     if (strcmp(event, "summon") == 0 && room && room[0]) {
         /* summoned: join via invite code (device has no membership yet) */
-        start_join(ev->arg0 ? "room_name" : "invite", room);
+        start_join(ev->flag ? "room_name" : "invite", room);
     }
 }
 

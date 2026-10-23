@@ -57,7 +57,7 @@ function onMsg(m) {
       if (m.ok) log(`房间信息：${m.name}，在线 ${m.online_count}，邀请码 ${m.invite_digits}`, "state");
       break;
     case "notify":
-      if (m.event === "summon" && m.room) { log(`被召唤进入 ${m.room.name}`); doJoin({ kind: "room_name", name: m.room.name }); }
+      if (m.event === "summon" && m.room) { log(`被召唤进入 ${m.room.name}`); doJoin({ kind: "invite", code: m.room.invite_code }); }
       break;
     case "leave_result":
       currentRoom = null; $("room").textContent = "—"; cleanup();

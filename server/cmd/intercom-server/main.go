@@ -51,8 +51,10 @@ func main() {
 			}
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if _, err := dial(ctx); err != nil {
+		if jc, err := dial(ctx); err != nil {
 			log.Printf("janus initial dial failed (will retry on first use): %v", err)
+		} else {
+			jc.Close() // connectivity check only; LiveMedia dials lazily
 		}
 		cancel()
 	} else {

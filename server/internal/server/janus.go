@@ -453,3 +453,8 @@ func (l *LiveMedia) Close() error {
 	if l.jm != nil { return l.jm.Close() }
 	return nil
 }
+
+// Close shuts the client connection; readLoop exits and pending calls fail.
+func (c *JanusClient) Close() {
+	_ = c.conn.Close(websocket.StatusNormalClosure, "bye")
+}

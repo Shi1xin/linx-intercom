@@ -79,6 +79,14 @@ func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 				log.Printf("device %s: webrtc up", sess.deviceID)
 			case "hangup":
 				log.Printf("device %s: media hangup", sess.deviceID)
+				sess.mu.Lock()
+				roomID := sess.roomID
+				sess.mu.Unlock()
+				s.clearMedia(sess)
+				sess.send(&OutMessage{Type: "notify", Event: "media_lost"})
+				if roomID != 0 {
+					s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -177,8 +185,29 @@ func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(1 << 20)
 	sess := &Session{srv: s, conn: conn, joinResps: map[string]*OutMessage{}}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	// liveness: ping every 30s, dead conn triggers onDisconnect
+	pingDone := make(chan struct{})
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-pingDone:
+				return
+			case <-t.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := conn.Ping(ctx)
+				cancel()
+				if err != nil {
+					conn.Close(websocket.StatusGoingAway, "ping timeout")
+					return
+				}
+			}
+		}
+	}()
+	defer close(pingDone)
 	for {
-		_, data, err := conn.Read(r.Context())
+		_, data, err := conn.Read(context.Background())
 		if err != nil {
 			s.onDisconnect(sess)
 			return
@@ -220,16 +249,22 @@ func (s *ControlServer) dispatch(sess *Session, m *InMessage) {
 }
 
 func (sess *Session) send(m *OutMessage) error {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
 	sess.writeMu.Lock()
 	defer sess.writeMu.Unlock()
 	if sess.closed {
 		return errors.New("closed")
 	}
-	data, err := json.Marshal(m)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := sess.conn.Write(ctx, websocket.MessageText, data); err != nil {
+		sess.closed = true
 		return err
 	}
-	return sess.conn.Write(context.Background(), websocket.MessageText, data)
+	return nil
 }
 
 func (s *ControlServer) onHello(ctx context.Context, sess *Session, m *InMessage) {
@@ -247,6 +282,16 @@ func (s *ControlServer) onHello(ctx context.Context, sess *Session, m *InMessage
 		sess.send(errOut(m.RequestID, "internal", err.Error()))
 		return
 	}
+	if dev.Token != "" && m.Token != dev.Token {
+		sess.send(&OutMessage{Type: "hello_result", RequestID: m.RequestID, OK: false,
+			Error: &OutError{Code: "auth_failed", Message: "device token mismatch"}})
+		return
+	}
+	s.mu.Lock()
+	if sess.deviceID != "" && sess.deviceID != m.DeviceID {
+		delete(s.byDevice, sess.deviceID)
+	}
+	s.mu.Unlock()
 	sess.deviceID = m.DeviceID
 	sess.muted = dev.Muted
 
@@ -459,6 +504,7 @@ func (s *ControlServer) onJoin(ctx context.Context, sess *Session, m *InMessage)
 	sess.mu.Lock()
 	sess.roomID = room.ID
 	sess.mu.Unlock()
+	s.broadcastPeerChange(prevRoom, "peer_left", sess.deviceID)
 	out := &OutMessage{Type: "join_result", RequestID: m.RequestID, OK: true,
 		NeedMedia: false, Room: s.roomInfo(ctx, room)}
 	sess.mu.Lock()
@@ -580,15 +626,19 @@ func (s *ControlServer) onConfirm(ctx context.Context, sess *Session, m *InMessa
 }
 
 func (s *ControlServer) broadcastPeerChange(roomID int64, event, deviceID string) {
+	var targets []*Session
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for sess := range s.sessions {
 		sess.mu.Lock()
 		inRoom := sess.roomID == roomID
 		sess.mu.Unlock()
 		if inRoom && sess.deviceID != deviceID {
-			sess.send(&OutMessage{Type: "notify", Event: event, DeviceID: deviceID})
+			targets = append(targets, sess)
 		}
+	}
+	s.mu.Unlock()
+	for _, sess := range targets {
+		sess.send(&OutMessage{Type: "notify", Event: event, DeviceID: deviceID})
 	}
 }
 
