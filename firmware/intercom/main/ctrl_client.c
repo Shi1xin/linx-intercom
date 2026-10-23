@@ -320,6 +320,14 @@ static void dispatch_message(cJSON *root)
             tool = "self.intercom.set_mute";
         } else if (strcmp(op->valuestring, "leave") == 0) {
             tool = "self.intercom.leave";
+        } else if (strcmp(op->valuestring, "nfc") == 0 && cJSON_IsString(arg)) {
+            /* test/injection entry: an NFC tap arriving here runs the exact
+             * same executor path a real reader event would (APP_EV_NFC ->
+             * start_join "nfc"), letting us cover it without the reader */
+            app_post_str(APP_EV_NFC, arg->valuestring, NULL, 0, true);
+            ctrl_send_op_result(opid->valuestring, true,
+                                "{\"ok\":true,\"accepted\":true}");
+            return;
         }
         if (tool == NULL) {
             ctrl_send_op_result(opid->valuestring, false,

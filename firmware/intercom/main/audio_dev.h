@@ -21,8 +21,11 @@ void audio_rx_enqueue(const uint8_t *data, int size);
  * AUDIO_SRC_LINX = platform TTS (16k opus), AUDIO_SRC_ROOM = Janus (48k opus) */
 #define AUDIO_SRC_LINX 0
 #define AUDIO_SRC_ROOM 1
+#define AUDIO_SRC_TONE 2   /* local cue, synthesized in playback task */
 void audio_rx_set_source(int src);
 void audio_rx_enqueue_src(int src, const uint8_t *data, int size);
+int  audio_rx_current_source(void);
+void audio_rx_play_tone(int freq_hz, int ms);
 void audio_decoder_reset(void);
 
 /* Drop all queued downlink frames (used on room switch with need_media=false

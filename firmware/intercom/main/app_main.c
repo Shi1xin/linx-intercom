@@ -9,6 +9,7 @@
  */
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -68,6 +69,16 @@ static char s_linx_client_id[48];
 static int  s_rejoin_count;
 #define MAX_MEDIA_REJOIN 5
 static int16_t s_pcm_silence[MIC_FRAME_SAMPLES]; /* zeros: keepalive payload */
+
+/* audible cue so cloud/NFC takeovers give room-entry feedback even when no
+ * platform TTS reply arrives. sine burst encoded through the normal opus
+ * path; transient interleave with room audio is harmless (same decoder). */
+static void play_tone(int freq_hz, int ms)
+{
+    /* synthesized in the playback task: no opus encoder/decoder contention */
+    audio_rx_play_tone(freq_hz, ms);
+    ESP_LOGI(TAG, "tone %dHz %dms", freq_hz, ms);
+}
 
 /* pending MCP call: reply is sent when the underlying room op resolves */
 static struct {
@@ -434,6 +445,7 @@ static void on_join_result(app_event_t *ev)
 {
     if (!ev->flag) {
         ESP_LOGW(TAG, "join failed: %s", ev->msg ? ev->msg : "?");
+        play_tone(220, 250);   /* failure cue */
         if (s_mcp_op.active && mcp_op_is("self.intercom.join")) {
             mcp_op_finish_err("join_failed", ev->msg);
         }
@@ -499,6 +511,7 @@ static void on_confirm_result(app_event_t *ev)
          * repeated drop->rejoin cycles across Janus keepalive periods. It is
          * reset by user-initiated joins (start_join from nfc/mcp/op). */
         ESP_LOGI(TAG, "in room %s (%s) online=%d", s_room_name, s_room_code, s_online_count);
+        play_tone(880, 80); play_tone(1170, 120);   /* room-entry cue */
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_ok_room();
@@ -743,6 +756,7 @@ static void on_leave_result(app_event_t *ev)
     if (mcp_op_is("self.intercom.leave")) {
         if (ev->flag) {
             mcp_op_finish(true, "{\"ok\":true,\"left\":true,\"mode\":\"linx\"}");
+            play_tone(660, 150);                   /* room-exit cue */
         } else {
             mcp_op_finish_err("leave_failed", "leave rejected");
         }
@@ -911,6 +925,9 @@ static void app_task(void *arg)
             }
             break;
         case APP_EV_MCP_CALL:          on_mcp_call(&ev); break;
+        case APP_EV_NFC:
+            if (ev.msg) start_join("nfc", ev.msg);
+            break;
         case APP_EV_OP_TIMEOUT:        on_op_timeout(); break;
         case APP_EV_CMD_RESULT:
             break;

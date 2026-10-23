@@ -48,6 +48,7 @@ typedef enum {
     APP_EV_MCP_CALL,          /* msg = packed json {"id":..,"name":..,"arguments":..} */
     APP_EV_LINX_RECONNECT_TIMER,
     APP_EV_OP_TIMEOUT,        /* pending room op watchdog */
+    APP_EV_NFC,               /* msg = nfc entry_id (hardware or injected test) */
 } app_ev_type_t;
 
 typedef struct {

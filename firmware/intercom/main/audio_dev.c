@@ -1,6 +1,7 @@
 #include "audio_dev.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -26,6 +27,10 @@ typedef struct {
 } rx_pkt_t;
 
 static int s_rx_src = AUDIO_SRC_LINX;
+
+/* tone frames carry src==AUDIO_SRC_TONE and data[0..1]=freq*10, [2..3]=ms.
+ * The playback task synthesizes them directly at the output rate, so tones
+ * never touch the opus decoder and play regardless of the arbiter owner. */
 
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
@@ -131,12 +136,37 @@ void audio_rx_set_source(int src)
     }
 }
 
+int audio_rx_current_source(void) { return s_rx_src; }
+
+static void audio_rx_enqueue_tagged(int src, const uint8_t *data, int size)
+{
+    if (s_rx_queue == NULL || size <= 0 || size > RX_PKT_MAX) {
+        return;
+    }
+    rx_pkt_t pkt = { .len = size, .src = src };
+    memcpy(pkt.data, data, size);
+    if (xQueueSend(s_rx_queue, &pkt, 0) != pdTRUE) {
+        rx_pkt_t drop;
+        xQueueReceive(s_rx_queue, &drop, 0);
+        xQueueSend(s_rx_queue, &pkt, 0);
+    }
+}
+
 void audio_rx_enqueue_src(int src, const uint8_t *data, int size)
 {
-    if (src != s_rx_src) {
+    if (src != s_rx_src && src != AUDIO_SRC_TONE) {
         return;   /* arbitration: only the active source feeds the decoder */
     }
-    audio_rx_enqueue(data, size);
+    audio_rx_enqueue_tagged(src, data, size);
+}
+
+void audio_rx_play_tone(int freq_hz, int ms)
+{
+    uint8_t hdr[4] = {
+        (uint8_t)((freq_hz * 10) & 0xff), (uint8_t)((freq_hz * 10) >> 8),
+        (uint8_t)(ms & 0xff), (uint8_t)(ms >> 8),
+    };
+    audio_rx_enqueue_tagged(AUDIO_SRC_TONE, hdr, sizeof(hdr));
 }
 
 void audio_rx_enqueue(const uint8_t *data, int size)
@@ -182,6 +212,27 @@ static void playback_task(void *arg)
             /* underflow: keep DMA fed with silence */
             memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));
             playback_write(s_pcm24, OUT_SAMPLES);
+            continue;
+        }
+        if (pkt.src == AUDIO_SRC_TONE) {
+            int freq = (pkt.data[0] | (pkt.data[1] << 8)) / 10;
+            int ms   = (pkt.data[2] | (pkt.data[3] << 8));
+            int total = AUDIO_OUTPUT_SAMPLE_RATE * ms / 1000;
+            if (freq <= 0 || total <= 0) {
+                continue;
+            }
+            for (int done = 0; done < total;) {
+                int n = total - done;
+                if (n > OUT_SAMPLES) n = OUT_SAMPLES;
+                for (int i = 0; i < n; i++) {
+                    int idx = done + i;
+                    float env = 1.0f - (float)idx / total;
+                    s_pcm24[i] = (int16_t)(sinf(2.0f * 3.1415926f * freq * idx /
+                                              AUDIO_OUTPUT_SAMPLE_RATE) * 12000 * env);
+                }
+                playback_write(s_pcm24, n);
+                done += n;
+            }
             continue;
         }
         if (pkt.src != s_rx_src) {
