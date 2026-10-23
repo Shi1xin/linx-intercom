@@ -38,6 +38,16 @@ typedef enum {
     /* command capture finished, msg = join JSON target already built */
     APP_EV_CMD_RESULT,
     APP_EV_RECONNECT_TIMER,
+    /* linx platform channel */
+    APP_EV_LINX_CONNECTED,
+    APP_EV_LINX_DISCONNECTED,
+    APP_EV_LINX_HELLO,        /* flag = ok */
+    APP_EV_LINX_TOOLS_LISTED, /* platform finished MCP discovery */
+    APP_EV_LINX_TTS,          /* flag = tts start(true)/stop(false) */
+    APP_EV_LINX_ABORT,
+    APP_EV_MCP_CALL,          /* msg = packed json {"id":..,"name":..,"arguments":..} */
+    APP_EV_LINX_RECONNECT_TIMER,
+    APP_EV_OP_TIMEOUT,        /* pending room op watchdog */
 } app_ev_type_t;
 
 typedef struct {

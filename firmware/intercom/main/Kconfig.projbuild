@@ -50,4 +50,38 @@ menu "Intercom Configuration"
         help
             Argument for the stub join target (room name / invite code / entry id).
 
+    config INTERCOM_LINX_ENABLE
+        bool "Connect to the Linx platform (default conversation channel)"
+        default y
+
+    config INTERCOM_LINX_OTA_URL
+        string "Linx OTA gateway URL"
+        default "https://xrobo.qiniuapi.com/v1/ota/"
+
+    config INTERCOM_LINX_DEVICE_ID
+        string "Platform Device-Id override (empty = Wi-Fi MAC)"
+        default ""
+        help
+            Device identity presented to OTA/WebSocket headers. Leave empty to
+            use the Wi-Fi STA MAC.
+
+    config INTERCOM_LINX_CLIENT_ID
+        string "Platform Client-Id override (empty = generated uuid in NVS)"
+        default ""
+
+    config INTERCOM_LINX_BOARD_TYPE
+        string "Board type reported to OTA"
+        default "bread-compact-wifi"
+
+    config INTERCOM_LINX_SELFTEST_TEXT
+        string "listen.detect text sent once after MCP tools/list (empty = off)"
+        default ""
+        help
+            Headless test hook: simulates a spoken command. Emitted once per
+            session ~1 s after the platform finishes tools/list.
+
+    config INTERCOM_SPEAKER_ENABLE
+        bool "Enable speaker playback (set n for silent bench tests)"
+        default y
+
 endmenu

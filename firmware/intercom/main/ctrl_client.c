@@ -219,14 +219,19 @@ static void dispatch_message(cJSON *root)
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *room = cJSON_GetObjectItem(root, "room");
         cJSON *n = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "name") : NULL;
+        cJSON *c = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "invite_code") : NULL;
+        cJSON *o = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "online_count") : NULL;
         app_post_str(APP_EV_CONFIRM_RESULT, cJSON_IsString(n) ? n->valuestring : NULL,
-                     NULL, 0, cJSON_IsTrue(ok));
+                     cJSON_IsString(c) ? c->valuestring : NULL,
+                     cJSON_IsNumber(o) ? o->valueint : 0, cJSON_IsTrue(ok));
     } else if (strcmp(t, "room_info_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *name = cJSON_GetObjectItem(root, "name");
         cJSON *cnt = cJSON_GetObjectItem(root, "online_count");
+        cJSON *code = cJSON_GetObjectItem(root, "invite_code");
         app_post_str(APP_EV_ROOM_INFO_RESULT,
-                     cJSON_IsString(name) ? name->valuestring : NULL, NULL,
+                     cJSON_IsString(name) ? name->valuestring : NULL,
+                     cJSON_IsString(code) ? code->valuestring : NULL,
                      cJSON_IsNumber(cnt) ? cnt->valueint : 0, cJSON_IsTrue(ok));
     } else if (strcmp(t, "mute_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
