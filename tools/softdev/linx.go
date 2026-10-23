@@ -20,6 +20,7 @@ type linxConn struct {
 	sendMu    sync.Mutex
 	sessionID atomic.Value
 	dev       *softDevice
+	advMCP    bool // advertise mcp feature in hello
 }
 
 type mcpPayload struct {
@@ -68,7 +69,7 @@ var deviceTools = []map[string]any{
 	},
 }
 
-func dialLinx(url, token, devID, clientID string) (*linxConn, error) {
+func dialLinx(url, token, devID, clientID string, advMCP bool) (*linxConn, error) {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+token)
 	hdr.Set("Device-Id", devID)
@@ -82,7 +83,7 @@ func dialLinx(url, token, devID, clientID string) (*linxConn, error) {
 		return nil, err
 	}
 	conn.SetReadLimit(4 << 20)
-	l := &linxConn{conn: conn}
+	l := &linxConn{conn: conn, advMCP: advMCP}
 	return l, nil
 }
 
@@ -105,7 +106,7 @@ func (l *linxConn) sendJSON(v any) {
 func (l *linxConn) hello() {
 	l.sendJSON(map[string]any{
 		"type": "hello", "version": 1, "transport": "websocket",
-		"features":    map[string]any{"mcp": true},
+		"features":    map[string]any{"mcp": l.advMCP},
 		"audio_params": map[string]any{"format": "opus", "sample_rate": 16000,
 			"channels": 1, "frame_duration": 20},
 	})

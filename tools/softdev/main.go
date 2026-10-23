@@ -6,9 +6,10 @@
 // joins with real WebRTC media through Janus AudioBridge.
 //
 // Usage:
-//   softdev -ota .local/platform-assessment/ota-bound.json \
-//     -device-id 02:c5:4b:c2:bc:b1 -client-id e05eb33b-... \
-//     -ctrl ws://10.234.144.99:8090/ws -prompt "请调用加入对讲房间工具，邀请码…"
+//
+//	softdev -ota .local/platform-assessment/ota-bound.json \
+//	  -device-id 02:c5:4b:c2:bc:b1 -client-id e05eb33b-... \
+//	  -ctrl ws://10.234.144.99:8090/ws -prompt "请调用加入对讲房间工具，邀请码…"
 //
 // Stdin accepts {"tool":"self.intercom.join","arguments":{...}} lines and runs
 // them through the same executor, printing STDIN_OP_RESULT lines.
@@ -71,6 +72,7 @@ func main() {
 		trace    = flag.String("trace", "", "write full trace json to this path")
 		summary  = flag.String("summary", "", "write summary json to this path")
 		noLinx   = flag.Bool("no-linx", false, "skip platform connection (stdin ops only)")
+		noDevMCP = flag.Bool("no-devmcp", false, "connect to platform but do not advertise device mcp tools")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -134,7 +136,7 @@ func main() {
 		if url == "" || tok == "" || *devID == "" || *clientID == "" {
 			log.Fatalf("linx url/token/device-id/client-id required (or -no-linx)")
 		}
-		lx, err := dialLinx(url, tok, *devID, *clientID)
+		lx, err := dialLinx(url, tok, *devID, *clientID, !*noDevMCP)
 		if err != nil {
 			log.Fatalf("linx dial: %v", err)
 		}
@@ -148,10 +150,25 @@ func main() {
 		promptOnce := make(chan struct{}, 1)
 		go func() {
 			runDone <- lx.run(ctx,
-				func() { select { case promptOnce <- struct{}{}: default: } },
+				func() {
+					select {
+					case promptOnce <- struct{}{}:
+					default:
+					}
+				},
 				func(name string) { callDone <- name })
 		}()
 		go func() {
+			if *noDevMCP {
+				// platform never runs tools/list without the mcp feature;
+				// give the session a moment, then send the detect text
+				select {
+				case <-time.After(1500 * time.Millisecond):
+					promptOnce <- struct{}{}
+				case <-ctx.Done():
+					return
+				}
+			}
 			select {
 			case <-promptOnce:
 				if *prompt != "" {
