@@ -62,12 +62,15 @@ static const char *k_tools_json =
 
 /* ---------- low-level send ---------- */
 
-static esp_err_t linx_send_text_n(const char *text, int len)
+static esp_err_t linx_send_text_tmo(const char *text, int len,
+                                    TickType_t lock_wait, TickType_t send_tmo)
 {
     esp_err_t ret = ESP_FAIL;
-    xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+    if (xSemaphoreTake(s_tx_lock, lock_wait) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     if (s_ws && s_connected) {
-        int r = esp_websocket_client_send_text(s_ws, text, len, pdMS_TO_TICKS(3000));
+        int r = esp_websocket_client_send_text(s_ws, text, len, send_tmo);
         ret = (r >= 0) ? ESP_OK : ESP_FAIL;
     }
     xSemaphoreGive(s_tx_lock);
@@ -77,25 +80,40 @@ static esp_err_t linx_send_text_n(const char *text, int len)
     return ret;
 }
 
-static esp_err_t linx_send_json(cJSON *root)
+static esp_err_t linx_send_text_n(const char *text, int len)
+{
+    return linx_send_text_tmo(text, len, portMAX_DELAY, pdMS_TO_TICKS(3000));
+}
+
+static esp_err_t linx_send_json_tmo(cJSON *root, TickType_t lock_wait,
+                                    TickType_t send_tmo)
 {
     char *text = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (text == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t ret = linx_send_text_n(text, strlen(text));
+    esp_err_t ret = linx_send_text_tmo(text, strlen(text), lock_wait, send_tmo);
     free(text);
     return ret;
 }
 
+static esp_err_t linx_send_json(cJSON *root)
+{
+    return linx_send_json_tmo(root, portMAX_DELAY, pdMS_TO_TICKS(3000));
+}
+
+/* Session control issued inside the capture loop must stay below the mic
+ * FIFO depth (~320 ms): bounded lock and socket wait, or the frame stalls. */
 int linx_send_audio(const uint8_t *data, int size)
 {
     int r = -1;
-    xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(30)) != pdTRUE) {
+        return r;
+    }
     if (s_ws && s_connected) {
         r = esp_websocket_client_send_bin(s_ws, (const char *)data, size,
-                                          pdMS_TO_TICKS(500));
+                                          pdMS_TO_TICKS(50));
     }
     xSemaphoreGive(s_tx_lock);
     return r;
@@ -130,7 +148,7 @@ esp_err_t linx_send_listen(const char *state, const char *mode)
     if (s_session_id[0]) {
         cJSON_AddStringToObject(root, "session_id", s_session_id);
     }
-    return linx_send_json(root);
+    return linx_send_json_tmo(root, pdMS_TO_TICKS(60), pdMS_TO_TICKS(200));
 }
 
 esp_err_t linx_send_detect_text(const char *text)

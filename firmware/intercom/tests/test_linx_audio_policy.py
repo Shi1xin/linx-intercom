@@ -217,6 +217,29 @@ class TestLinxPolicySourceGuards(unittest.TestCase):
                         "source filter must gate the increment before enqueue")
         self.assertIn("AUDIO_SRC_TONE", body)  # tone path still bypasses the gate
 
+    def test_capture_loop_sends_are_bounded_below_fifo_depth(self):
+        src = (MAIN_DIR / "linx_client.c").read_text()
+        audio = _extract_function(
+            src, "int linx_send_audio(const uint8_t *data, int size)")
+        self.assertNotIn("portMAX_DELAY", audio,
+                         "audio frames must drop on lock contention, not stall")
+        audio_tmo = re.search(r"send_bin\(s_ws, \(const char \*\)data, size,\s*"
+                              r"pdMS_TO_TICKS\((\d+)\)\)", audio)
+        self.assertIsNotNone(audio_tmo)
+        self.assertLessEqual(int(audio_tmo.group(1)) + 30, 320,
+                             "audio lock wait + send timeout must stay under "
+                             "the 320 ms mic FIFO")
+        listen = _extract_function(
+            src, 'esp_err_t linx_send_listen(const char *state, const char *mode)')
+        listen_call = re.search(
+            r"linx_send_json_tmo\(root, pdMS_TO_TICKS\((\d+)\),\s*"
+            r"pdMS_TO_TICKS\((\d+)\)\)", listen)
+        self.assertIsNotNone(listen_call,
+                             "listen start/stop runs inside the capture loop")
+        self.assertLessEqual(
+            int(listen_call.group(1)) + int(listen_call.group(2)), 320,
+            "listen lock wait + send timeout must stay under the 320 ms mic FIFO")
+
 
 if __name__ == "__main__":
     unittest.main()
