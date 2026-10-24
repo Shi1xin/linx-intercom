@@ -64,6 +64,17 @@ static const char *k_tools_json =
 
 /* ---------- low-level send ---------- */
 
+/* A send that fails on a dead socket means the peer vanished without a close
+ * frame (silent platform drop or half-open TCP): flag the session so senders
+ * stop and the app-side reconnect path runs. */
+static void linx_flag_dead_socket(void)
+{
+    if (s_ws && s_connected && !esp_websocket_client_is_connected(s_ws)) {
+        s_connected = false;
+        app_post(APP_EV_LINX_DISCONNECTED, NULL, NULL, 0, false);
+    }
+}
+
 static esp_err_t linx_send_text_tmo(const char *text, int len,
                                     TickType_t lock_wait, TickType_t send_tmo)
 {
@@ -74,6 +85,9 @@ static esp_err_t linx_send_text_tmo(const char *text, int len,
     if (s_ws && s_connected) {
         int r = esp_websocket_client_send_text(s_ws, text, len, send_tmo);
         ret = (r >= 0) ? ESP_OK : ESP_FAIL;
+        if (r < 0) {
+            linx_flag_dead_socket();
+        }
     }
     xSemaphoreGive(s_tx_lock);
     if (ret != ESP_OK) {
@@ -116,6 +130,9 @@ int linx_send_audio(const uint8_t *data, int size)
     if (s_ws && s_connected) {
         r = esp_websocket_client_send_bin(s_ws, (const char *)data, size,
                                           pdMS_TO_TICKS(50));
+        if (r < 0) {
+            linx_flag_dead_socket();
+        }
     }
     xSemaphoreGive(s_tx_lock);
     return r;
