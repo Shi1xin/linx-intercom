@@ -22,6 +22,16 @@
 #define DMA_DESC_NUM     6
 #define DMA_FRAME_NUM    240
 #define MIC_DMA_DESC_NUM 12   /* ~165 ms of queued RX headroom at 16 kHz */
+#define MIC_FRAME_SAMPLES (AUDIO_INPUT_SAMPLE_RATE * 20 / 1000)
+#define MIC_QUEUE_LEN     16
+#define MIC_TASK_STACK    4096
+#define MIC_TASK_PRIORITY 19  /* Preempt pc_task's DTLS work (priority 18). */
+#define MIC_TASK_CORE     ((portNUM_PROCESSORS > 1) ? 1 : 0)
+
+typedef struct {
+    int count;
+    int16_t pcm[MIC_FRAME_SAMPLES];
+} mic_frame_t;
 
 typedef struct {
     int      len;
@@ -41,6 +51,11 @@ static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
 static portMUX_TYPE s_mic_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_mic_rx_overflows;
+static uint32_t s_mic_dropped_samples;
+static QueueHandle_t s_mic_queue;
+static TaskHandle_t s_mic_task;
+static mic_frame_t s_mic_pending;
+static size_t s_mic_pending_offset;
 static QueueHandle_t     s_rx_queue;
 static TaskHandle_t      s_play_task;
 static volatile int      s_volume = 70;
@@ -67,6 +82,26 @@ uint32_t audio_dev_mic_rx_overflows(void)
     uint32_t count = s_mic_rx_overflows;
     portEXIT_CRITICAL(&s_mic_stats_lock);
     return count;
+}
+
+static void mic_record_drop(uint32_t samples)
+{
+    portENTER_CRITICAL(&s_mic_stats_lock);
+    s_mic_dropped_samples += samples;
+    portEXIT_CRITICAL(&s_mic_stats_lock);
+}
+
+uint32_t audio_dev_mic_dropped_samples(void)
+{
+    portENTER_CRITICAL(&s_mic_stats_lock);
+    uint32_t count = s_mic_dropped_samples;
+    portEXIT_CRITICAL(&s_mic_stats_lock);
+    return count;
+}
+
+uint32_t audio_dev_mic_stack_hwm(void)
+{
+    return s_mic_task ? (uint32_t)uxTaskGetStackHighWaterMark(s_mic_task) : 0;
 }
 
 static esp_err_t i2s_tx_init(void)
@@ -141,9 +176,12 @@ static esp_err_t i2s_rx_init(void)
     return i2s_channel_enable(s_rx);
 }
 
-int audio_dev_mic_read(int16_t *out, int samples)
+/* Physical mic path: a dedicated acquisition task reads I2S into a bounded
+ * PCM FIFO; audio_dev_mic_read() is the single consumer. */
+
+static int mic_read_i2s(int16_t *out, int samples)
 {
-    static int32_t raw[AUDIO_INPUT_SAMPLE_RATE * 20 / 1000]; /* 320 */
+    static int32_t raw[MIC_FRAME_SAMPLES]; /* 320 */
     size_t bytes_read = 0;
     if (samples > (int)(sizeof(raw) / sizeof(raw[0]))) {
         samples = sizeof(raw) / sizeof(raw[0]);
@@ -158,6 +196,60 @@ int audio_dev_mic_read(int16_t *out, int samples)
         out[i] = v > INT16_MAX ? INT16_MAX : (v < -INT16_MAX ? -INT16_MAX : (int16_t)v);
     }
     return got;
+}
+
+static void mic_enqueue_frame(const mic_frame_t *frame)
+{
+    if (xQueueSend(s_mic_queue, frame, 0) == pdTRUE) {
+        return;
+    }
+    mic_frame_t discard;
+    if (xQueueReceive(s_mic_queue, &discard, 0) == pdTRUE) {
+        mic_record_drop((uint32_t)discard.count);
+    }
+    if (xQueueSend(s_mic_queue, frame, 0) != pdTRUE) {
+        mic_record_drop((uint32_t)frame->count);
+    }
+}
+
+static void mic_capture_task(void *arg)
+{
+    (void)arg;
+    mic_frame_t frame;
+    for (;;) {
+        int n = mic_read_i2s(frame.pcm, MIC_FRAME_SAMPLES);
+        if (n <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        frame.count = n;
+        mic_enqueue_frame(&frame);
+        vTaskDelay(1);
+    }
+}
+
+int audio_dev_mic_read(int16_t *out, int samples)
+{
+    if (s_mic_queue == NULL || out == NULL || samples <= 0) {
+        return -1;
+    }
+    if (s_mic_pending_offset >= (size_t)s_mic_pending.count) {
+        if (xQueueReceive(s_mic_queue, &s_mic_pending, portMAX_DELAY) != pdTRUE) {
+            return -1;
+        }
+        s_mic_pending_offset = 0;
+        if (s_mic_pending.count <= 0 || s_mic_pending.count > MIC_FRAME_SAMPLES) {
+            s_mic_pending_offset = 0;
+            s_mic_pending.count = 0;
+            return -1;
+        }
+    }
+    int remaining = s_mic_pending.count - (int)s_mic_pending_offset;
+    int take = samples < remaining ? samples : remaining;
+    memcpy(out, s_mic_pending.pcm + s_mic_pending_offset,
+           take * sizeof(int16_t));
+    s_mic_pending_offset += take;
+    return take;
 }
 
 /* ---------- downlink playback ---------- */
@@ -320,7 +412,10 @@ esp_err_t audio_dev_init(void)
     s_rx_queue = xQueueCreate(RX_QUEUE_LEN, sizeof(rx_pkt_t));
     s_out32 = heap_caps_malloc(OUT_SAMPLES * sizeof(int32_t), MALLOC_CAP_8BIT);
     s_pcm24 = heap_caps_malloc(OUT_SAMPLES * sizeof(int16_t), MALLOC_CAP_8BIT);
-    if (s_rx_queue == NULL || s_out32 == NULL || s_pcm24 == NULL) {
+    s_mic_queue = xQueueCreateWithCaps(MIC_QUEUE_LEN, sizeof(mic_frame_t),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (s_rx_queue == NULL || s_out32 == NULL || s_pcm24 == NULL ||
+        s_mic_queue == NULL) {
         return ESP_ERR_NO_MEM;
     }
 #if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
@@ -331,5 +426,12 @@ esp_err_t audio_dev_init(void)
     BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(playback_task, "aud_play",
                                                     30 * 1024, NULL, 10,
                                                     &s_play_task, 1, stack_caps);
+    if (ok != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+    ok = xTaskCreatePinnedToCoreWithCaps(mic_capture_task, "aud_mic",
+                                         MIC_TASK_STACK, NULL, MIC_TASK_PRIORITY,
+                                         &s_mic_task, MIC_TASK_CORE,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

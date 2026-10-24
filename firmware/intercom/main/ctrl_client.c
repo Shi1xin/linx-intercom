@@ -382,8 +382,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         s_rx_len = 0;
         app_post(APP_EV_WS_CONNECTED, NULL, NULL, 0, false);
         break;
+    case WEBSOCKET_EVENT_CLOSED:
     case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "ws disconnected");
+        ESP_LOGW(TAG, "ws disconnected (clean=%d)", (int)(id == WEBSOCKET_EVENT_CLOSED));
         s_connected = false;
         s_rx_len = 0;
         app_post(APP_EV_WS_DISCONNECTED, NULL, NULL, 0, false);

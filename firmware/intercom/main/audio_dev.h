@@ -9,12 +9,21 @@
 
 esp_err_t audio_dev_init(void);
 
-/* Read one 20 ms mic frame (returns 16-bit mono samples at 16 kHz).
- * Blocks until `samples` are captured. Returns sample count or <0 on error. */
+/* Read mic samples from the bounded acquisition FIFO (16-bit mono, 16 kHz).
+ * Blocks until at least one frame is available; may return a partial frame.
+ * an over-size request yields at most one queued frame, a smaller request
+ * leaves the tail for the next call. Single consumer (capture_task).
+ * Returns sample count or <0 on error. */
 int  audio_dev_mic_read(int16_t *out, int samples);
 
 /* Cumulative RX DMA queue overflows since boot, sampled under the ISR lock. */
 uint32_t audio_dev_mic_rx_overflows(void);
+
+/* Samples discarded by the bounded PCM queue, cumulative since boot. */
+uint32_t audio_dev_mic_dropped_samples(void);
+
+/* Remaining acquisition-task stack high-water mark, in bytes. */
+uint32_t audio_dev_mic_stack_hwm(void);
 
 /* Feed an encoded downlink frame (called from peer on_audio_data ctx).
  * Copies data; drops when queue is full (jitter). */

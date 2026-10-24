@@ -377,13 +377,15 @@ static void capture_task(void *arg)
             ESP_LOGI(TAG, "mic peak=%d samples=%lu elapsed_us=%lld",
                      (int)mic_peak, (unsigned long)mic_samples,
                      (long long)(now - mic_log_start));
-            ESP_LOGI(TAG, "mic resources internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u stack_hwm=%u mic_overflows=%lu",
+            ESP_LOGI(TAG, "mic resources internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u stack_hwm=%u mic_overflows=%lu mic_dropped_samples=%lu mic_stack_hwm=%u",
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                      (unsigned)uxTaskGetStackHighWaterMark(NULL),
-                     (unsigned long)audio_dev_mic_rx_overflows());
+                     (unsigned long)audio_dev_mic_rx_overflows(),
+                     (unsigned long)audio_dev_mic_dropped_samples(),
+                     (unsigned)audio_dev_mic_stack_hwm());
             mic_samples = 0;
             mic_peak = 0;
             mic_log_start = now;
