@@ -68,7 +68,7 @@ class TestCaptureDiagnostics(unittest.TestCase):
         self.assertLess(peak_loop, proc, "peak tracking must run before audio_proc_mic")
 
     def test_periodic_log_reports_samples_and_elapsed(self):
-        self.assertIn("mic peak=%d samples=%lu elapsed_us=%lld", self.body)
+        self.assertIn("mic peak=%d clip=%lu samples=%lu elapsed_us=%lld", self.body)
         self.assertIn("mic_log_start = now", self.body)
 
 
@@ -106,8 +106,9 @@ class TestCaptureStageTrace(unittest.TestCase):
         )
 
     def test_slow_stage_log_threshold_and_format(self):
-        self.assertIn("elapsed > 40000", self.helper)
+        self.assertIn("elapsed <= 40000", self.helper)  # warn above 40 ms
         self.assertIn('"capture stage=%s elapsed_us=%lld"', self.helper)
+        self.assertIn('"capture stage=read max_us=%lld stalls=%u"', self.helper)
         self.assertIn("esp_timer_get_time() - started_us", self.helper)
 
 

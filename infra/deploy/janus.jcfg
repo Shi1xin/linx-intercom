@@ -7,7 +7,7 @@ general: {
 	debug_level = 4
 	debug_timestamps = true
 	debug_colors = false
-	admin_secret = "intercomnight"
+	admin_secret = "CHANGE_ME"   # set per deployment
 	session_timeout = 60
 }
 certificates: {
@@ -23,7 +23,7 @@ nat: {
 	ice_lite = true
 	ice_tcp = false
 	ice_ignore_list = "vmnet,docker,virbr,veth,br-"
-	nat_1_1_mapping = "111.62.241.119"
+	# nat_1_1_mapping = "<public-ip>"   # enable when Janus sits behind NAT
 }
 plugins: {
 }

@@ -1,5 +1,5 @@
-# 灵矽同频 backend-cn 部署配置（本轮：配置+只读诊断，未上线）
-# 目标：intercom.lingxiwmp.qiniu.com，WSS 经 openresty 反代，媒体走 UDP
+# 灵矽同频 backend 部署配置（模板）
+# WSS 经反代（如 openresty）终止 TLS，媒体走 UDP
 #
 # 需对外端口：
 #   443        — openresty 反代 wss://.../janus 与 wss://.../ws
@@ -23,11 +23,11 @@ services:
       - "-n"
       - "--log-file=stdout"
       - "--listening-port=3478"
-      - "--realm=intercom.lingxiwmp.qiniu.com"
+      - "--realm=${TURN_REALM:-intercom}"
       - "--user=${TURN_USER:-intercom}:${TURN_PASS:?set TURN_PASS}"
       - "--min-port=49160"
       - "--max-port=49200"
-      - "--external-ip=111.62.241.119"
+      - "--external-ip=${PUBLIC_IP:?set PUBLIC_IP}"
       - "--fingerprint"
       - "--lt-cred-mech"
 
@@ -41,6 +41,10 @@ services:
       DB_PATH: "/data/intercom.db"
       DEVICE_TOKEN: "${DEVICE_TOKEN:?set DEVICE_TOKEN}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN}"
+      # 云端 MCP 端点需要显式令牌；MCP=0 可整体关闭该入口
+      MCP: "${MCP:-1}"
+      MCP_TOKEN: "${MCP_TOKEN:?set MCP_TOKEN or MCP=0}"
+      MCP_TARGET: "${MCP_TARGET:-}"
     volumes:
       - intercom-data:/data
 

@@ -14,3 +14,11 @@ infra/data/
 artifacts/
 /.local/
 tools/wsprobe/wsprobe
+*.db
+*.db-shm
+*.db-wal
+tools/softdev/softdev
+tools/turnsrv/turnsrv
+tools/mcpbridge/mcpbridge
+*.elf
+.taste-skill/

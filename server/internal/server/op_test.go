@@ -278,6 +278,142 @@ func TestAdminOpHTTP(t *testing.T) {
 	}
 }
 
+func TestHelloCannotRotateToken(t *testing.T) {
+	srv, _, url := testServer(t)
+	ctx := context.Background()
+
+	dial := func() *wsClient {
+		conn, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &wsClient{conn: conn, t: t}
+		t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+		return c
+	}
+
+	// first hello registers the credential
+	c1 := dial()
+	c1.send(InMessage{Type: "hello", DeviceID: "dev-tok", Token: "good", RequestID: "h1"})
+	if h := c1.recv(); h.Type != "hello_result" || !h.OK {
+		t.Fatalf("first hello: %+v", h)
+	}
+
+	// a wrong token must not overwrite the stored credential: the reply
+	// fails, the connection drops, and the stored token survives intact
+	c2 := dial()
+	c2.send(InMessage{Type: "hello", DeviceID: "dev-tok", Token: "evil", RequestID: "h1"})
+	h2 := c2.recv()
+	if h2.OK || h2.Error == nil || h2.Error.Code != "auth_failed" {
+		t.Fatalf("wrong token accepted: %+v", h2)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, _, err := c2.conn.Read(readCtx); err == nil {
+		t.Fatal("auth-failed connection stayed open")
+	}
+	dev, _ := srv.store.GetDevice(ctx, "dev-tok")
+	if dev == nil || dev.Token != "good" {
+		t.Fatalf("token rotated: %+v", dev)
+	}
+
+	// the legitimate owner still gets in
+	c3 := dial()
+	c3.send(InMessage{Type: "hello", DeviceID: "dev-tok", Token: "good", RequestID: "h1"})
+	if h3 := c3.recv(); !h3.OK {
+		t.Fatalf("owner hello rejected: %+v", h3)
+	}
+}
+
+func TestLeaveInLobbyDoesNotBroadcast(t *testing.T) {
+	_, _, url := testServer(t)
+	ca := newWS(t, url, "dev-a")
+	cb := newWS(t, url, "dev-b")
+
+	ca.send(InMessage{Type: "leave", RequestID: "l1"})
+	if lv := ca.recvType("leave_result"); !lv.OK {
+		t.Fatalf("leave: %+v", lv)
+	}
+	// dev-b is idle; a leave with no room must produce no notify
+	readCtx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	if _, data, err := cb.conn.Read(readCtx); err == nil {
+		t.Fatalf("spurious notify to idle peer: %s", data)
+	}
+}
+
+func TestJoinWithoutRequestIDNotDeduped(t *testing.T) {
+	_, _, url := testServer(t)
+	c := newWS(t, url, "dev-norid")
+	raw := func(m InMessage) {
+		data, _ := json.Marshal(m)
+		if err := c.conn.Write(context.Background(), websocket.MessageText, data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw(InMessage{Type: "join", Target: &JoinTarget{Kind: "nfc", EntryID: "tag-1"}})
+	m1 := c.recvType("join_result")
+	raw(InMessage{Type: "join", Target: &JoinTarget{Kind: "nfc", EntryID: "tag-2"}})
+	m2 := c.recvType("join_result")
+	if !m1.OK || !m2.OK || m1.Room == nil || m2.Room == nil || m1.Room.ID == m2.Room.ID {
+		t.Fatalf("empty-rid joins aliased: %+v / %+v", m1.Room, m2.Room)
+	}
+}
+
+func TestMalformedICERejected(t *testing.T) {
+	_, _, url := testServer(t)
+	c := newWS(t, url, "dev-ice")
+	c.send(InMessage{Type: "ice", RequestID: "i1"})
+	m := c.recv()
+	if m.Type != "error" || m.Error == nil || m.Error.Code != "bad_request" {
+		t.Fatalf("empty ice accepted: %+v", m)
+	}
+}
+
+func TestStateInviteCodeGatedByAdminToken(t *testing.T) {
+	store := newTestStore(t)
+	fm := NewFakeMedia()
+	srv := NewControlServer(Config{Addr: ":0", AdminToken: "adm"}, store, fm)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	wsURL := strings.Replace(ts.URL, "http", "ws", 1) + "/ws"
+	c := newWS(t, wsURL, "dev-s")
+	c.joinRoom(t, JoinTarget{Kind: "nfc", EntryID: "tag-x"})
+
+	get := func(token string) map[string]any {
+		req, _ := http.NewRequest("GET", ts.URL+"/state?device_id=dev-s", nil)
+		if token != "" {
+			req.Header.Set("X-Admin-Token", token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body map[string]any
+		json.NewDecoder(resp.Body).Decode(&body)
+		return body
+	}
+
+	pub := get("")
+	room, _ := pub["room"].(map[string]any)
+	if room == nil {
+		t.Fatalf("room missing: %v", pub)
+	}
+	if _, leaked := room["invite_code"]; leaked {
+		t.Fatalf("invite_code leaked without admin token: %v", room)
+	}
+	if room["name"] == nil || room["online_count"] == nil {
+		t.Fatalf("public fields stripped: %v", room)
+	}
+
+	adm := get("adm")
+	room2, _ := adm["room"].(map[string]any)
+	if room2 == nil || room2["invite_code"] == nil || room2["invite_code"] == "" {
+		t.Fatalf("invite_code missing for admin: %v", adm)
+	}
+}
+
 func TestMCPToolCallEndToEnd(t *testing.T) {
 	// mcp routes are bound at Handler() build time: attach before NewServer
 	store := newTestStore(t)

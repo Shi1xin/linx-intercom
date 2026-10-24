@@ -147,6 +147,7 @@ func (a *MCPAdapter) handleMessage(w http.ResponseWriter, r *http.Request) {
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
@@ -199,6 +200,9 @@ func (a *MCPAdapter) dispatch(req *struct {
 		reply.Result = map[string]any{"tools": cloudTools}
 		return reply
 	case "tools/call":
+		if len(req.ID) == 0 {
+			return nil // notification form: never execute side effects
+		}
 		return a.callTool(req, srcDevice)
 	default:
 		if len(req.ID) == 0 {

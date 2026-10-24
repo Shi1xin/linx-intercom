@@ -62,6 +62,7 @@ static bool s_linx_reply_pending;
 static volatile bool s_wake_listen;
 static volatile bool s_command_active;
 static int64_t s_tts_window_until;
+static int64_t s_tts_started_us;
 """
 
 FIXTURE_HARNESS = r"""
@@ -72,7 +73,7 @@ static void reset(void)
     g_gate_n = 0; g_src_n = 0;
     s_linx_playing = false; s_linx_reply_pending = false;
     s_wake_listen = false; s_command_active = false;
-    s_tts_window_until = 0;
+    s_tts_window_until = 0; s_tts_started_us = 0;
 }
 static void check(const char *name, bool cond)
 {

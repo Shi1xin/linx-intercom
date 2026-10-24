@@ -208,6 +208,11 @@ static int mic_read_i2s(int16_t *out, int samples)
     }
     int got = bytes_read / sizeof(int32_t);
     for (int i = 0; i < got; i++) {
+        /* INMP441 puts 24-bit audio left-justified in the 32-bit slot, so
+         * >>12 keeps the top 20 bits and clamps to int16 — +24 dB over a
+         * unity 24->16 mapping (>>16). Speech near the mic saturates at
+         * 32767 here; `mic peak=32767` is this gain stage clipping, not
+         * ADC or I2S overrun. */
         int32_t v = raw[i] >> 12;
         out[i] = v > INT16_MAX ? INT16_MAX : (v < -INT16_MAX ? -INT16_MAX : (int16_t)v);
     }

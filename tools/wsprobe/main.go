@@ -30,6 +30,13 @@ type iceCand struct {
 	SDPMLineIndex int    `json:"sdpMLineIndex"`
 }
 
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 type msg struct {
 	Type      string          `json:"type"`
 	RequestID string          `json:"request_id,omitempty"`
@@ -212,7 +219,7 @@ func (c *client) joinRoom(devID string, target map[string]string) msg {
 	return m
 }
 
-var turnAddr string
+var turnAddr, turnUser, turnPass string
 
 func (c *client) startMedia() error {
 	var err error
@@ -220,8 +227,8 @@ func (c *client) startMedia() error {
 	if turnAddr != "" {
 		cfg.ICEServers = []webrtc.ICEServer{{
 			URLs:       []string{"turn:" + turnAddr + "?transport=udp"},
-			Username:   "intercom",
-			Credential: "night2026",
+			Username:   turnUser,
+			Credential: turnPass,
 		}}
 	}
 	c.pc, err = webrtc.NewPeerConnection(cfg)
@@ -345,9 +352,11 @@ func main() {
 		mute    = flag.Bool("mute", false, "exercise set_mute on/off")
 		leave   = flag.Bool("leave", false, "send leave before exit")
 		turn    = flag.String("turn", "", "turn server host:port")
+		turnU   = flag.String("turn-user", env("TURN_USER", "intercom"), "turn username")
+		turnP   = flag.String("turn-pass", env("TURN_PASS", ""), "turn password")
 	)
 	flag.Parse()
-	turnAddr = *turn
+	turnAddr, turnUser, turnPass = *turn, *turnU, *turnP
 
 	if *record != "" {
 		w, err := oggwriter.New(*record, 48000, 2)

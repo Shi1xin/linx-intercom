@@ -179,8 +179,9 @@ func (s *ControlServer) handleRegisterEntry(w http.ResponseWriter, r *http.Reque
 }
 
 // handleDeviceState reports a connected device's live room state for the
-// browser status panel. Read-only; it returns the same fields any room peer
-// already sees (mode, room, invite code, online count, mute).
+// browser status panel. Read-only. The invite code is a join credential, so
+// it is included only for requests carrying the admin token when one is
+// configured; mode/room/online/mute stay readable for the panel.
 func (s *ControlServer) handleDeviceState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	id := r.URL.Query().Get("device_id")
@@ -209,7 +210,14 @@ func (s *ControlServer) handleDeviceState(w http.ResponseWriter, r *http.Request
 	if roomID != 0 {
 		if room, err := s.store.GetRoom(r.Context(), roomID); err == nil && room != nil {
 			resp["mode"] = "intercom"
-			resp["room"] = s.roomInfo(r.Context(), room)
+			ri := map[string]any{
+				"id": room.ID, "name": room.Name,
+				"online_count": s.onlineCount(room.ID),
+			}
+			if s.cfg.AdminToken == "" || r.Header.Get("X-Admin-Token") == s.cfg.AdminToken {
+				ri["invite_code"] = room.InviteCode
+			}
+			resp["room"] = ri
 		}
 	}
 	_ = json.NewEncoder(w).Encode(resp)
@@ -256,8 +264,21 @@ func (s *ControlServer) handleRooms(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	rooms, err := s.store.ListRooms(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]any, 0, len(rooms))
+	for i := range rooms {
+		out = append(out, map[string]any{
+			"id": rooms[i].ID, "name": rooms[i].Name,
+			"invite_code": rooms[i].InviteCode,
+			"online_count": s.onlineCount(rooms[i].ID),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "rooms": out})
 }
 
 func (s *ControlServer) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -355,44 +376,63 @@ func (sess *Session) send(m *OutMessage) error {
 	return nil
 }
 
+// failHello replies with a failed hello_result then drops the connection so
+// the device reconnects and retries on a fresh socket instead of sitting
+// connected-but-unauthed forever.
+func (s *ControlServer) failHello(sess *Session, m *InMessage, code, msg string) {
+	sess.send(&OutMessage{Type: "hello_result", RequestID: m.RequestID, OK: false,
+		Error: &OutError{Code: code, Message: msg}})
+	_ = sess.conn.Close(websocket.StatusPolicyViolation, code)
+}
+
 func (s *ControlServer) onHello(ctx context.Context, sess *Session, m *InMessage) {
 	if m.DeviceID == "" {
 		sess.send(errOut(m.RequestID, "bad_request", "device_id required"))
 		return
 	}
 	if s.cfg.DeviceToken != "" && m.Token != s.cfg.DeviceToken {
-		sess.send(&OutMessage{Type: "hello_result", RequestID: m.RequestID, OK: false,
-			Error: &OutError{Code: "auth_failed", Message: "invalid token"}})
+		s.failHello(sess, m, "auth_failed", "invalid token")
 		return
 	}
-	dev, err := s.store.UpsertDevice(ctx, m.DeviceID, m.Token)
+	// validate against the stored credential before any write: the token
+	// column is insert-only, so a wrong token can never rotate it
+	dev, err := s.store.GetDevice(ctx, m.DeviceID)
 	if err != nil {
 		sess.send(errOut(m.RequestID, "internal", err.Error()))
 		return
 	}
-	if dev.Token != "" && m.Token != dev.Token {
-		sess.send(&OutMessage{Type: "hello_result", RequestID: m.RequestID, OK: false,
-			Error: &OutError{Code: "auth_failed", Message: "device token mismatch"}})
+	if dev != nil && dev.Token != "" && m.Token != dev.Token {
+		s.failHello(sess, m, "auth_failed", "device token mismatch")
+		return
+	}
+	dev, err = s.store.UpsertDevice(ctx, m.DeviceID, m.Token)
+	if err != nil {
+		sess.send(errOut(m.RequestID, "internal", err.Error()))
 		return
 	}
 	s.mu.Lock()
+	sess.mu.Lock()
 	if sess.deviceID != "" && sess.deviceID != m.DeviceID {
 		delete(s.byDevice, sess.deviceID)
 	}
-	s.mu.Unlock()
 	sess.deviceID = m.DeviceID
 	sess.muted = dev.Muted
+	sess.mu.Unlock()
+	s.mu.Unlock()
 
 	s.mu.Lock()
-	if old := s.byDevice[m.DeviceID]; old != nil && old != sess {
-		old.mu.Lock()
-		old.closed = true
-		old.mu.Unlock()
-		_ = old.conn.Close(websocket.StatusNormalClosure, "superseded")
-	}
+	old := s.byDevice[m.DeviceID]
 	s.sessions[sess] = struct{}{}
 	s.byDevice[m.DeviceID] = sess
 	s.mu.Unlock()
+	if old != nil && old != sess {
+		old.mu.Lock()
+		old.closed = true
+		old.mu.Unlock()
+		// close handshake waits for the peer's close frame; keep it off the
+		// read loop so a wedged old client cannot stall this hello
+		go old.conn.Close(websocket.StatusNormalClosure, "superseded")
+	}
 
 	out := &OutMessage{Type: "hello_result", RequestID: m.RequestID, OK: true, Muted: dev.Muted}
 	if dev.ResumeRoomID.Valid {
@@ -530,13 +570,17 @@ func (s *ControlServer) onJoin(ctx context.Context, sess *Session, m *InMessage)
 		sess.send(errOut(m.RequestID, "bad_request", "target required"))
 		return
 	}
-	sess.mu.Lock()
-	if prev, ok := sess.joinResps[m.RequestID]; ok {
+	// request_id dedup makes join retries idempotent; clients that omit the
+	// field get no caching (an empty key would alias every such join)
+	if m.RequestID != "" {
+		sess.mu.Lock()
+		prev, ok := sess.joinResps[m.RequestID]
 		sess.mu.Unlock()
-		sess.send(prev)
-		return
+		if ok {
+			sess.send(prev)
+			return
+		}
 	}
-	sess.mu.Unlock()
 
 	room, err := s.resolveTarget(ctx, sess, m.Target)
 	if err != nil {
@@ -566,7 +610,7 @@ func (s *ControlServer) onJoin(ctx context.Context, sess *Session, m *InMessage)
 		out := &OutMessage{Type: "join_result", RequestID: m.RequestID, OK: true,
 			NeedMedia: true, Room: s.roomInfo(ctx, room)}
 		sess.mu.Lock()
-		sess.joinResps[m.RequestID] = out
+		sess.rememberJoin(m.RequestID, out)
 		sess.pendingRoomID = room.ID
 		sess.mu.Unlock()
 		sess.send(out)
@@ -592,13 +636,27 @@ func (s *ControlServer) onJoin(ctx context.Context, sess *Session, m *InMessage)
 	sess.mu.Lock()
 	sess.roomID = room.ID
 	sess.mu.Unlock()
-	s.broadcastPeerChange(prevRoom, "peer_left", sess.deviceID)
+	if prevRoom != 0 {
+		s.broadcastPeerChange(prevRoom, "peer_left", sess.deviceID)
+	}
 	out := &OutMessage{Type: "join_result", RequestID: m.RequestID, OK: true,
 		NeedMedia: false, Room: s.roomInfo(ctx, room)}
 	sess.mu.Lock()
-	sess.joinResps[m.RequestID] = out
+	sess.rememberJoin(m.RequestID, out)
 	sess.mu.Unlock()
 	sess.send(out)
+}
+
+// rememberJoin caches a join response for request-id dedup. Call with
+// sess.mu held. The map is bounded; entries only serve retry replays.
+func (sess *Session) rememberJoin(reqID string, m *OutMessage) {
+	if reqID == "" {
+		return
+	}
+	if len(sess.joinResps) >= 128 {
+		sess.joinResps = map[string]*OutMessage{}
+	}
+	sess.joinResps[reqID] = m
 }
 
 func (s *ControlServer) onSDP(ctx context.Context, sess *Session, m *InMessage) {
@@ -662,6 +720,10 @@ func (s *ControlServer) onSDP(ctx context.Context, sess *Session, m *InMessage) 
 }
 
 func (s *ControlServer) onICE(ctx context.Context, sess *Session, m *InMessage) {
+	if !m.Completed && m.Candidate == nil {
+		sess.send(errOut(m.RequestID, "bad_request", "ice needs candidate or completed"))
+		return
+	}
 	sess.mu.Lock()
 	p := sess.participant
 	if p == nil {
@@ -894,7 +956,9 @@ func (s *ControlServer) onLeave(ctx context.Context, sess *Session, m *InMessage
 		_ = s.media.Leave(ctx, p)
 		_ = s.media.Detach(ctx, p)
 	}
-	s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
+	if roomID != 0 {
+		s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
+	}
 	sess.send(&OutMessage{Type: "leave_result", RequestID: m.RequestID, OK: true})
 }
 
@@ -937,12 +1001,12 @@ func (s *ControlServer) onDisconnect(sess *Session) {
 		defer cancel()
 		_ = s.media.Detach(ctx, p)
 	}
-	s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
+	if roomID != 0 {
+		s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
+	}
 }
 
 func (s *ControlServer) ListenAndServe() error {
 	log.Printf("intercom control server listening on %s", s.cfg.Addr)
 	return http.ListenAndServe(s.cfg.Addr, s.Handler())
 }
-
-var _ = fmt.Sprintf

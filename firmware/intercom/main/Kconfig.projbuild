@@ -14,7 +14,7 @@ menu "Intercom Configuration"
 
     config INTERCOM_CTRL_URL
         string "Control WebSocket URL"
-        default "ws://10.234.79.213:8090/ws"
+        default "ws://192.0.2.1:8090/ws"
         help
             Control service endpoint, e.g. ws://<host>:8090/ws
 
@@ -24,7 +24,7 @@ menu "Intercom Configuration"
 
     config INTERCOM_TURN_URL
         string "TURN/STUN server URL (empty = host candidates only)"
-        default "turn:10.234.79.213:3478?transport=udp"
+        default ""
         help
             ICE server URL passed to esp_peer, e.g. turn:host:3478?transport=udp
             or stun:host:3478. Leave empty to use host candidates only.
@@ -35,7 +35,7 @@ menu "Intercom Configuration"
 
     config INTERCOM_TURN_PASS
         string "TURN password"
-        default "night2026"
+        default ""
 
     config INTERCOM_CMD_TARGET_KIND
         string "Command recognition stub join target kind"

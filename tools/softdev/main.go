@@ -7,9 +7,9 @@
 //
 // Usage:
 //
-//	softdev -ota .local/platform-assessment/ota-bound.json \
-//	  -device-id 02:c5:4b:c2:bc:b1 -client-id e05eb33b-... \
-//	  -ctrl ws://10.234.144.99:8090/ws -prompt "请调用加入对讲房间工具，邀请码…"
+//	softdev -ota ota-bound.json \
+//	  -device-id <device-mac> -client-id <platform-client-uuid> \
+//	  -ctrl ws://<host>:8090/ws -prompt "请调用加入对讲房间工具，邀请码…"
 //
 // Stdin accepts {"tool":"self.intercom.join","arguments":{...}} lines and runs
 // them through the same executor, printing STDIN_OP_RESULT lines.
@@ -25,6 +25,13 @@ import (
 	"os"
 	"time"
 )
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
 
 func (d *softDevice) modeSnapshot() string {
 	d.mu.Lock()
@@ -127,6 +134,8 @@ func main() {
 		ctrlURL  = flag.String("ctrl", "ws://127.0.0.1:8090/ws", "intercom control ws url")
 		ctrlTok  = flag.String("ctrl-token", "dev", "intercom device token")
 		turn     = flag.String("turn", "", "turn host:port for media fallback")
+		turnUser = flag.String("turn-user", env("TURN_USER", "intercom"), "turn username")
+		turnPass = flag.String("turn-pass", env("TURN_PASS", ""), "turn password")
 		ogg      = flag.String("ogg", "", "opus ogg to stream while in room")
 		prompt   = flag.String("prompt", "", "listen.detect text to send after tools/list")
 		script   = flag.String("script", "", "json file [{\"text\":...,\"delay_ms\":N}] — one detect per round, paced on tts stop")
@@ -164,7 +173,8 @@ func main() {
 	}
 
 	d := &softDevice{mode: "linx", deviceID: *devID, token: *ctrlTok,
-		turnAddr: *turn, oggPath: *ogg, started: time.Now()}
+		turnAddr: *turn, turnUser: *turnUser, turnPass: *turnPass,
+		oggPath: *ogg, started: time.Now()}
 
 	ctrl, err := dialCtrl(*ctrlURL)
 	if err != nil {

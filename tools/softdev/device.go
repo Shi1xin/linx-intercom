@@ -24,6 +24,8 @@ type softDevice struct {
 	deviceID string
 	token    string
 	turnAddr string
+	turnUser string
+	turnPass string
 	oggPath  string
 
 	traceMu  sync.Mutex
@@ -186,7 +188,7 @@ func (d *softDevice) opJoin(target map[string]string) (map[string]any, error) {
 	}
 	mediaState := "reused"
 	if j.NeedMedia {
-		m, err := newMedia(d, d.turnAddr)
+		m, err := newMedia(d, d.turnAddr, d.turnUser, d.turnPass)
 		if err != nil {
 			return nil, fmt.Errorf("media init: %w", err)
 		}

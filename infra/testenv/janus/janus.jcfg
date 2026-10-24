@@ -7,7 +7,7 @@ general: {
 	debug_level = 4
 	debug_timestamps = true
 	debug_colors = false
-	admin_secret = "intercomnight"
+	admin_secret = "CHANGE_ME"   # set per deployment
 	session_timeout = 60
 }
 certificates: {

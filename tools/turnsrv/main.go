@@ -7,19 +7,30 @@ import (
 	"flag"
 	"log"
 	"net"
+	"os"
 
 	"github.com/pion/turn/v4"
 )
 
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 func main() {
 	var (
 		addr  = flag.String("addr", "0.0.0.0:3478", "udp listen")
-		publicIP = flag.String("public-ip", "10.234.79.213", "relay advertised ip")
-		user  = flag.String("user", "intercom", "username")
-		pass  = flag.String("pass", "night2026", "password")
+		publicIP = flag.String("public-ip", "127.0.0.1", "relay advertised ip")
+		user  = flag.String("user", env("TURN_USER", "intercom"), "username")
+		pass  = flag.String("pass", env("TURN_PASS", ""), "password (or TURN_PASS env)")
 		realm = flag.String("realm", "intercom", "realm")
 	)
 	flag.Parse()
+	if *pass == "" {
+		log.Fatal("-pass or TURN_PASS required")
+	}
 
 	udp, err := net.ListenUDP("udp4", mustResolve(*addr))
 	if err != nil {
