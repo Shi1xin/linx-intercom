@@ -34,7 +34,8 @@ audio { width: 100% }
   <button id="btnUnmute">恢复通话</button>
   <label><input type="checkbox" id="fakeAudio"> 用正弦波代替麦克风</label>
 </div>
-<div class="row">房间：<span id="room" class="state">—</span></div>
+<div class="row">本端房间：<span id="room" class="state">—</span> · 最近动作：<span id="action" class="state">—</span></div>
+<div class="row">设备 <input id="watchDev" size="20" placeholder="设备 MAC（可用 ?dev= 带参）"> 状态：<span id="devState" class="state">—</span></div>
 <audio id="remote" autoplay></audio>
 <div id="log"></div>
 <script src="client.js"></script>

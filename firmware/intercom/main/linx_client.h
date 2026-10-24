@@ -31,3 +31,7 @@ esp_err_t linx_mcp_reply_error(const char *id_raw, int code, const char *message
  * the playback queue (idle-linx mode always; intercom only during an open
  * command/reply window). */
 void      linx_set_playback_gate(bool allow);
+
+/* esp_timer usec of the most recent downlink TTS opus frame, 0 before any.
+ * Lets the app bound a round whose tts stop never arrives. */
+int64_t   linx_last_tts_frame_us(void);

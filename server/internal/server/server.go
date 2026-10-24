@@ -149,6 +149,7 @@ func (s *ControlServer) Handler() http.Handler {
 	mux.HandleFunc("/admin/register-entry", s.handleRegisterEntry)
 	mux.HandleFunc("/admin/rooms", s.handleRooms)
 	mux.HandleFunc("/admin/op", s.handleAdminOp)
+	mux.HandleFunc("/state", s.handleDeviceState)
 	if s.mcp != nil {
 		s.mcp.Register(mux)
 	}
@@ -175,6 +176,43 @@ func (s *ControlServer) handleRegisterEntry(w http.ResponseWriter, r *http.Reque
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleDeviceState reports a connected device's live room state for the
+// browser status panel. Read-only; it returns the same fields any room peer
+// already sees (mode, room, invite code, online count, mute).
+func (s *ControlServer) handleDeviceState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	id := r.URL.Query().Get("device_id")
+	if id == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "device_id required"})
+		return
+	}
+	s.mu.Lock()
+	sess := s.byDevice[id]
+	s.mu.Unlock()
+	if sess == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_id": id, "connected": false, "mode": "offline"})
+		return
+	}
+	sess.mu.Lock()
+	roomID, muted := sess.roomID, sess.muted
+	sess.mu.Unlock()
+	resp := map[string]any{
+		"device_id": id,
+		"connected": true,
+		"mode":      "linx",
+		"muted":     muted,
+	}
+	if roomID != 0 {
+		if room, err := s.store.GetRoom(r.Context(), roomID); err == nil && room != nil {
+			resp["mode"] = "intercom"
+			resp["room"] = s.roomInfo(r.Context(), room)
+		}
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleAdminOp dispatches a server-initiated op to a device and returns the

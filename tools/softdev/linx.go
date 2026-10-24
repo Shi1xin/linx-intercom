@@ -185,7 +185,9 @@ func (l *linxConn) handleMCP(raw json.RawMessage) (string, bool) {
 }
 
 // run is the platform read loop; returns when conn dies or ctx ends.
-func (l *linxConn) run(ctx context.Context, onToolsListed func(), onToolCall func(name string)) error {
+// onTTS receives every tts state ("start"/"sentence_start"/"stop") so script
+// drivers can pace prompts to reply boundaries.
+func (l *linxConn) run(ctx context.Context, onToolsListed func(), onToolCall func(name string), onTTS func(state string)) error {
 	for {
 		mt, data, err := l.conn.Read(ctx)
 		if err != nil {
@@ -225,6 +227,9 @@ func (l *linxConn) run(ctx context.Context, onToolsListed func(), onToolCall fun
 		case "tts":
 			if m.State == "stop" {
 				l.dev.trace("linx-tts-stop", nil)
+			}
+			if onTTS != nil {
+				onTTS(m.State)
 			}
 		}
 	}

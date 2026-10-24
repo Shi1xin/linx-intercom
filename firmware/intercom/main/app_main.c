@@ -34,6 +34,8 @@
 #include "cmd_input.h"
 #include "linx_ota.h"
 #include "linx_client.h"
+#include "announce.h"
+#include "tts_watchdog.h"
 #include "wake_word.h"
 #include "wake_trace.h"
 
@@ -101,6 +103,7 @@ static struct {
  * while in linx mode, or while a command/tool-result round is still open
  * (filter for late TTS after takeover). us deadline on esp_timer clock. */
 static int64_t s_tts_window_until;
+static int64_t s_tts_started_us;          /* current round's tts start time */
 
 /* command key: press tick + whether a linx listen round was opened.
  * listen start is deferred ~250 ms so quick taps / double-tap mute never
@@ -309,6 +312,24 @@ static void mcp_op_finish_err(const char *code, const char *msg)
 static bool mcp_op_is(const char *name)
 {
     return s_mcp_op.active && strcmp(s_mcp_op.name, name) == 0;
+}
+
+/* the agent speaks the result in two cases: a device-side tool call on our
+ * linx session, or a cloud op that our own listen round just triggered
+ * (reply still owed). every other entry — cloud admin, another endpoint,
+ * NFC, summon, resume — gets the local announcer instead. */
+static bool agent_will_speak(void)
+{
+    if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
+        return true;
+    }
+    /* reply_pending has no own deadline — a wedged round (no tts stop) would
+     * otherwise suppress every later announcement for good. honour it only
+     * inside the tts window so the announcer self-heals. */
+    bool reply_pending = s_linx_reply_pending &&
+                         esp_timer_get_time() < s_tts_window_until;
+    return reply_pending || s_linx_playing ||
+           s_wake_listen || s_command_active;
 }
 
 /* ---------- linx bootstrap ---------- */
@@ -545,7 +566,11 @@ static void on_join_result(app_event_t *ev)
 {
     if (!ev->flag) {
         ESP_LOGW(TAG, "join failed: %s", ev->msg ? ev->msg : "?");
-        play_tone(220, 250);   /* failure cue */
+        if (agent_will_speak()) {
+            play_tone(220, 250);   /* failure cue; agent TTS explains */
+        } else {
+            announce_op_failed();  /* cloud/NFC entry: user needs words */
+        }
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_err("join_failed", ev->msg);
@@ -612,7 +637,11 @@ static void on_confirm_result(app_event_t *ev)
          * repeated drop->rejoin cycles across Janus keepalive periods. It is
          * reset by user-initiated joins (start_join from nfc/mcp/op). */
         ESP_LOGI(TAG, "in room %s (%s) online=%d", s_room_name, s_room_code, s_online_count);
-        play_tone(880, 80); play_tone(1170, 120);   /* room-entry cue */
+        if (agent_will_speak()) {
+            play_tone(880, 80); play_tone(1170, 120);   /* room-entry cue */
+        } else {
+            announce_room_entry(s_room_name, s_room_code);
+        }
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_ok_room();
@@ -872,8 +901,13 @@ static void on_leave_result(app_event_t *ev)
     set_state(APP_STATE_IDLE);
     if (mcp_op_is("self.intercom.leave")) {
         if (ev->flag) {
+            bool speak = agent_will_speak();
             mcp_op_finish(true, "{\"ok\":true,\"left\":true,\"mode\":\"linx\"}");
-            play_tone(660, 150);                   /* room-exit cue */
+            if (speak) {
+                play_tone(660, 150);               /* room-exit cue */
+            } else {
+                announce_leave_done();
+            }
         } else {
             mcp_op_finish_err("leave_failed", "leave rejected");
         }
@@ -950,6 +984,7 @@ static void on_linx_tts(app_event_t *ev)
             return;
         }
         s_linx_playing = true;
+        s_tts_started_us = esp_timer_get_time();
         if (s_wake_listen) {
             /* the platform answered the wake round; stop streaming */
             s_wake_listen = false;
@@ -990,11 +1025,34 @@ static void on_op_timeout(void)
     mcp_op_finish_err("timeout", "operation timed out, query status for actual state");
 }
 
+/* periodic recovery: a TTS round whose stop never arrives would otherwise
+ * hold s_linx_playing forever — muting announcements and wake/mic gating.
+ * frames flowing keep it alive (see tts_watchdog.h). */
+static void housekeeping(void)
+{
+    if (!s_linx_playing) {
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (tts_round_expired(now, s_tts_started_us, linx_last_tts_frame_us())) {
+        ESP_LOGW(TAG, "linx tts round expired; recovering");
+        s_linx_playing = false;
+        s_linx_reply_pending = false;
+        s_tts_window_until = now;
+        if (s_wake_listen) {
+            s_wake_listen = false;
+            wake_word_enable(true);
+        }
+        update_linx_gate();
+    }
+}
+
 static void app_task(void *arg)
 {
     app_event_t ev;
     for (;;) {
-        if (xQueueReceive(g_app_queue, &ev, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(g_app_queue, &ev, pdMS_TO_TICKS(500)) != pdTRUE) {
+            housekeeping();
             continue;
         }
         switch (ev.type) {
