@@ -76,11 +76,6 @@ bool audio_rx_play_frames(const opus_frame_t *frames, int nframes)
     return false;
 }
 
-bool audio_rx_frames_busy(void)
-{
-    return s_clip[0].state != 0 || s_clip[1].state != 0;
-}
-
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
 static portMUX_TYPE s_mic_stats_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -397,9 +392,11 @@ static void playback_task(void *arg)
             }
         }
         if (clip >= 0) {
+            __sync_synchronize();   /* acquire: frames[]/n written before state=1 */
             if (s_clip[clip].idx >= s_clip[clip].n) {
                 ESP_LOGI(TAG, "clip done frames=%d slot=%d", s_clip[clip].n, clip);
-                s_clip[clip].state = 0;
+                /* CAS: a flush+re-arm must not be clobbered back to free */
+                __sync_bool_compare_and_swap(&s_clip[clip].state, 2, 0);
                 s_dec_reset_pending = true;   /* clean seam back to live audio */
                 continue;
             }

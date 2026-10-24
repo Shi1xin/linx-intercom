@@ -321,7 +321,12 @@ static bool agent_will_speak(void)
     if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
         return true;
     }
-    return s_linx_reply_pending || s_linx_playing ||
+    /* reply_pending has no own deadline — a wedged round (no tts stop) would
+     * otherwise suppress every later announcement for good. honour it only
+     * inside the tts window so the announcer self-heals. */
+    bool reply_pending = s_linx_reply_pending &&
+                         esp_timer_get_time() < s_tts_window_until;
+    return reply_pending || s_linx_playing ||
            s_wake_listen || s_command_active;
 }
 
