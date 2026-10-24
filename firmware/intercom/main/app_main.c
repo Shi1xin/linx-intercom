@@ -35,6 +35,7 @@
 #include "linx_ota.h"
 #include "linx_client.h"
 #include "announce.h"
+#include "tts_watchdog.h"
 #include "wake_word.h"
 #include "wake_trace.h"
 
@@ -102,6 +103,7 @@ static struct {
  * while in linx mode, or while a command/tool-result round is still open
  * (filter for late TTS after takeover). us deadline on esp_timer clock. */
 static int64_t s_tts_window_until;
+static int64_t s_tts_started_us;          /* current round's tts start time */
 
 /* command key: press tick + whether a linx listen round was opened.
  * listen start is deferred ~250 ms so quick taps / double-tap mute never
@@ -982,6 +984,7 @@ static void on_linx_tts(app_event_t *ev)
             return;
         }
         s_linx_playing = true;
+        s_tts_started_us = esp_timer_get_time();
         if (s_wake_listen) {
             /* the platform answered the wake round; stop streaming */
             s_wake_listen = false;
@@ -1022,11 +1025,34 @@ static void on_op_timeout(void)
     mcp_op_finish_err("timeout", "operation timed out, query status for actual state");
 }
 
+/* periodic recovery: a TTS round whose stop never arrives would otherwise
+ * hold s_linx_playing forever — muting announcements and wake/mic gating.
+ * frames flowing keep it alive (see tts_watchdog.h). */
+static void housekeeping(void)
+{
+    if (!s_linx_playing) {
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (tts_round_expired(now, s_tts_started_us, linx_last_tts_frame_us())) {
+        ESP_LOGW(TAG, "linx tts round expired; recovering");
+        s_linx_playing = false;
+        s_linx_reply_pending = false;
+        s_tts_window_until = now;
+        if (s_wake_listen) {
+            s_wake_listen = false;
+            wake_word_enable(true);
+        }
+        update_linx_gate();
+    }
+}
+
 static void app_task(void *arg)
 {
     app_event_t ev;
     for (;;) {
-        if (xQueueReceive(g_app_queue, &ev, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(g_app_queue, &ev, pdMS_TO_TICKS(500)) != pdTRUE) {
+            housekeeping();
             continue;
         }
         switch (ev.type) {

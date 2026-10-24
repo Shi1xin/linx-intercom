@@ -19,7 +19,8 @@ function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj))
 function lastAction(s) { $("action").textContent = s; }
 
 $("server").value = (location.host || "localhost:8090");
-$("watchDev").value = "98:a3:16:cd:05:ac";
+/* 被监视设备由 ?dev=<device_id> 指定；页面默认不绑定任何具体设备 */
+$("watchDev").value = new URLSearchParams(location.search).get("dev") || "";
 
 $("btnConn").onclick = async () => {
   const url = `ws://${$("server").value}/ws`;
@@ -130,13 +131,26 @@ async function getAudio() {
     osc.connect(gain); gain.connect(dst); osc.start();
     return dst.stream;
   }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("非安全上下文，麦克风 API 不可用，请改用 localhost 隧道入口（见使用说明），或勾选正弦波");
+  }
   return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
 }
 
 async function startMedia() {
   cleanup();
   pc = new RTCPeerConnection({ iceServers: [] });
-  localStream = await getAudio();
+  try {
+    localStream = await getAudio();
+  } catch (e) {
+    const msg = e && e.name === "NotAllowedError"
+      ? "麦克风权限被拒绝：请在浏览器中允许麦克风后重新入房，或勾选“用正弦波代替麦克风”"
+      : `无法打开麦克风：${e && e.message ? e.message : e}`;
+    lastAction(msg);
+    log(msg, "err");
+    cleanup();
+    return;
+  }
   localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
   pc.ontrack = (ev) => { remoteStream = ev.streams[0]; $("remote").srcObject = remoteStream; };
   pc.onicecandidate = (ev) => {

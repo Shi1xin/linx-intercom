@@ -18,6 +18,7 @@
 #include "cJSON.h"
 #include "app_events.h"
 #include "audio_dev.h"
+#include "esp_timer.h"
 
 #define TAG "linx"
 #define RX_BUF_SIZE 16384
@@ -27,6 +28,7 @@ static esp_websocket_client_handle_t s_ws;
 static SemaphoreHandle_t s_tx_lock;
 static volatile bool s_connected;
 static volatile bool s_play_gate = true;   /* default linx mode plays TTS */
+static volatile int64_t s_last_tts_frame_us;
 
 static char  *s_rx_buf;
 static size_t s_rx_len;
@@ -355,6 +357,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         if (e->op_code == 0x2) {
             /* binary = platform TTS opus frame */
             static int s_tts_frames;
+            s_last_tts_frame_us = esp_timer_get_time();
             if (++s_tts_frames == 1 || s_tts_frames % 50 == 0) {
                 ESP_LOGI(TAG, "linx tts frame %dB gate=%d n=%d",
                          e->data_len, (int)s_play_gate, s_tts_frames);
@@ -473,4 +476,9 @@ bool linx_client_is_connected(void)
 void linx_set_playback_gate(bool allow)
 {
     s_play_gate = allow;
+}
+
+int64_t linx_last_tts_frame_us(void)
+{
+    return s_last_tts_frame_us;
 }

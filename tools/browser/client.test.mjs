@@ -23,7 +23,7 @@ function makeEl() {
            appendChild() {}, scrollTop: 0, scrollHeight: 0 };
 }
 
-function loadClient() {
+function loadClient(navOverride) {
   const els = new Map();
   const sent = [];
   const remoteStream = { id: "remote-1" };
@@ -52,8 +52,9 @@ function loadClient() {
   }
   const sandbox = {
     document, WebSocket, RTCPeerConnection,
-    location: { host: "test:8090" },
-    navigator: { mediaDevices: { getUserMedia: () => Promise.resolve(local) } },
+    location: { host: "test:8090", search: "" },
+    URLSearchParams,
+    navigator: navOverride ?? { mediaDevices: { getUserMedia: () => Promise.resolve(local) } },
     AudioContext: class {},
     fetch: () => Promise.resolve({ json: () => Promise.resolve({ connected: false }) }),
     setInterval: () => 1,
@@ -134,6 +135,26 @@ test("join failure reports the error as last action", () => {
             error: { code: "no_such_room", message: "邀请码无效" } });
   assert.match(el("action").textContent, /入房失败/);
   assert.match(el("action").textContent, /no_such_room/);
+});
+
+test("mic denial surfaces a readable error and sends no sdp", async () => {
+  const denied = Object.assign(new Error("denied"), { name: "NotAllowedError" });
+  const c = loadClient({ mediaDevices: { getUserMedia: () => Promise.reject(denied) } });
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.deliver({ type: "join_result", ok: true, need_media: true });
+  await tick(); await tick();
+  assert.match(c.el("action").textContent, /权限被拒绝/);
+  assert.equal(c.sent.at(-1).type, "hello", "no media offer after denial");
+});
+
+test("insecure context points the user at the localhost entry", async () => {
+  const c = loadClient({});           // mediaDevices absent, like http://IP:8090
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.deliver({ type: "join_result", ok: true, need_media: true });
+  await tick(); await tick();
+  assert.match(c.el("action").textContent, /localhost/);
 });
 
 function lastType(sent) { return sent.at(-1).type; }

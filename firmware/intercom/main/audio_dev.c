@@ -12,6 +12,7 @@
 #include "driver/i2s_std.h"
 #include "board.h"
 #include "audio_codec.h"
+#include "clip_sched.h"
 
 #define TAG "audio_dev"
 
@@ -47,33 +48,12 @@ static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
  * The playback task synthesizes them directly at the output rate, so tones
  * never touch the opus decoder and play regardless of the arbiter owner. */
 
-/* local announcement slots: producer (app task) arms a slot, the playback
- * task streams its frames through the decoder ahead of queued packets.
- * two slots let a newer state cue replace a queued one without clipping the
- * one already on the speaker. */
-#define CLIP_SLOT_CAP 384
-static struct clip_slot {
-    volatile int state;          /* 0 free, 1 armed, 2 playing */
-    int idx, n;
-    opus_frame_t frames[CLIP_SLOT_CAP];
-} s_clip[2];
-
+/* local announcements are scheduled through clip_sched: the app task posts
+ * sequences, the playback task owns the cursor. see clip_sched.c for the
+ * mailbox/ownership protocol. */
 bool audio_rx_play_frames(const opus_frame_t *frames, int nframes)
 {
-    if (frames == NULL || nframes <= 0 || nframes > CLIP_SLOT_CAP) {
-        return false;
-    }
-    for (int i = 0; i < 2; i++) {
-        if (s_clip[i].state == 0) {
-            memcpy(s_clip[i].frames, frames, nframes * sizeof(opus_frame_t));
-            s_clip[i].n = nframes;
-            s_clip[i].idx = 0;
-            __sync_synchronize();
-            s_clip[i].state = 1;
-            return true;
-        }
-    }
-    return false;
+    return clip_sched_post(frames, nframes);
 }
 
 static i2s_chan_handle_t s_tx;
@@ -359,11 +339,7 @@ void audio_rx_flush(void)
     }
     /* a state change (join/switch/leave/teardown) retires pending speech the
      * same way it retires buffered audio — stale cues must not play late */
-    for (int i = 0; i < 2; i++) {
-        s_clip[i].state = 0;
-        s_clip[i].idx = 0;
-        s_clip[i].n = 0;
-    }
+    clip_sched_flush();
 }
 
 static void playback_write(const int16_t *pcm, int samples)
@@ -381,34 +357,25 @@ static void playback_task(void *arg)
 {
     rx_pkt_t pkt;
     int16_t pcm48[4096];
+    bool s_clip_active = false;
+    uint32_t s_clip_gen = 0;
     ESP_LOGI(TAG, "playback task up");
     for (;;) {
-        /* armed announcement clips stream first, frame by frame */
-        int clip = -1;
-        for (int i = 0; i < 2; i++) {
-            if (s_clip[i].state != 0) {
-                clip = i;
-                break;
+        /* scheduled announcement frames stream first; the scheduler hands us
+         * stable buffers, so flush/re-arm can never touch an in-use frame */
+        const opus_frame_t *f = clip_sched_next();
+        if (f != NULL) {
+            uint32_t g = clip_sched_cur_gen();
+            if (!s_clip_active || g != s_clip_gen) {
+                s_dec_reset_pending = true;   /* seam in from live audio or a
+                                               * mid-play switch of sequence */
+                s_clip_gen = g;
             }
-        }
-        if (clip >= 0) {
-            __sync_synchronize();   /* acquire: frames[]/n written before state=1 */
-            if (s_clip[clip].idx >= s_clip[clip].n) {
-                ESP_LOGI(TAG, "clip done frames=%d slot=%d", s_clip[clip].n, clip);
-                /* CAS: a flush+re-arm must not be clobbered back to free */
-                __sync_bool_compare_and_swap(&s_clip[clip].state, 2, 0);
-                s_dec_reset_pending = true;   /* clean seam back to live audio */
-                continue;
-            }
-            s_clip[clip].state = 2;
-            if (s_clip[clip].idx == 0) {
-                s_dec_reset_pending = true;   /* seam in from live audio */
-            }
+            s_clip_active = true;
             if (s_dec_reset_pending) {
                 s_dec_reset_pending = false;
                 audio_decoder_reset();
             }
-            opus_frame_t *f = &s_clip[clip].frames[s_clip[clip].idx++];
             int dec_samples = audio_opus_decode(f->data, f->len, pcm48,
                                                 sizeof(pcm48) / sizeof(pcm48[0]));
             if (dec_samples <= 0) {
@@ -419,6 +386,12 @@ static void playback_task(void *arg)
             uint32_t out_samples = OUT_SAMPLES;
             audio_downsample_48k_to_out(pcm48, dec_samples, s_pcm24, &out_samples);
             playback_write(s_pcm24, out_samples);
+            continue;
+        }
+        if (s_clip_active) {
+            s_clip_active = false;
+            ESP_LOGI(TAG, "clip done frames=%d", clip_sched_done_frames());
+            s_dec_reset_pending = true;   /* clean seam back to live audio */
             continue;
         }
         if (xQueueReceive(s_rx_queue, &pkt, pdMS_TO_TICKS(100)) != pdTRUE) {
