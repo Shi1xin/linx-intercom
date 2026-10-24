@@ -355,7 +355,7 @@ func TestChangeRoomFailureRestores(t *testing.T) {
 	_ = c2room
 
 	// force changeroom failure
-	fm.FailNext = errTest
+	fm.SetFailNext(errTest)
 	c.send(InMessage{Type: "join", RequestID: "jf", Target: &JoinTarget{Kind: "room_name", Name: "一号房"}})
 	// currently in 二号房 after join; switching to 一号房 fails
 	m := c.recvType("join_result")

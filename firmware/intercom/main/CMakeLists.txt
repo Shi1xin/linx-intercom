@@ -10,6 +10,10 @@ idf_component_register(
         "cmd_input.c"
         "cmd_capture.c"
         "nvs_store.c"
+        "linx_ota.c"
+        "linx_client.c"
+        "wake_word.c"
+        "wake_trace.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
@@ -18,8 +22,12 @@ idf_component_register(
         esp_netif
         nvs_flash
         esp_websocket_client
+        esp_http_client
+        esp-tls
+        esp_app_format
         json
         driver
         esp_timer
         esp_common
+        mbedtls
 )

@@ -26,6 +26,9 @@ func main() {
 		dbPath      = flag.String("db", env("DB_PATH", "intercom.db"), "sqlite path")
 		deviceToken = flag.String("device-token", env("DEVICE_TOKEN", ""), "required device token")
 		adminToken  = flag.String("admin-token", env("ADMIN_TOKEN", ""), "admin endpoint token")
+		mcpEnable   = flag.Bool("mcp", env("MCP", "1") == "1", "enable cloud MCP (SSE) endpoints /mcp + /mcp/message")
+		mcpTarget   = flag.String("mcp-target", env("MCP_TARGET", ""), "default target device id for cloud MCP calls")
+		mcpToken    = flag.String("mcp-token", env("MCP_TOKEN", ""), "shared secret for /mcp endpoints (empty = open, dev only)")
 	)
 	flag.Parse()
 
@@ -68,6 +71,10 @@ func main() {
 		DeviceToken: *deviceToken,
 		AdminToken:  *adminToken,
 	}, store, media)
+	if *mcpEnable {
+		srv.AttachMCP(*mcpTarget, *mcpToken)
+		log.Printf("mcp adapter on /mcp (default target %q)", *mcpTarget)
+	}
 
 	go func() {
 		ch := make(chan os.Signal, 1)

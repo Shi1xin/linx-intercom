@@ -23,3 +23,6 @@ esp_err_t ctrl_send_confirm(void);
 esp_err_t ctrl_send_room_info(void);
 esp_err_t ctrl_send_set_mute(bool muted);
 esp_err_t ctrl_send_leave(void);
+
+/* reply to a server-initiated op (cloud MCP / admin) */
+esp_err_t ctrl_send_op_result(const char *op_id, bool ok, const char *result_json);

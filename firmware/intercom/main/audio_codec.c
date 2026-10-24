@@ -30,10 +30,11 @@ esp_err_t audio_codec_init(void)
         .bitrate = 32000,
         .frame_duration = ESP_OPUS_ENC_FRAME_DURATION_20_MS,
         .application_mode = ESP_OPUS_ENC_APPLICATION_VOIP,
-        .complexity = 5,
+        .complexity = 2,   /* SILK at complexity 5 overruns the 20 ms capture
+                            * cadence on S3 and starves IDLE0 (task_wdt) */
         .enable_fec = true,
         .enable_dtx = false,
-        .enable_vbr = true,
+        .enable_vbr = false,
     };
     if (esp_opus_enc_open(&enc_cfg, sizeof(enc_cfg), &s_enc) != ESP_AUDIO_ERR_OK || s_enc == NULL) {
         ESP_LOGE(TAG, "opus enc open failed");

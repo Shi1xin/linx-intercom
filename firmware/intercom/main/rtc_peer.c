@@ -127,7 +127,7 @@ static int peer_on_audio_info(esp_peer_audio_stream_info_t *info, void *ctx)
 
 static int peer_on_audio_data(esp_peer_audio_frame_t *frame, void *ctx)
 {
-    audio_rx_enqueue(frame->data, frame->size);
+    audio_rx_enqueue_src(AUDIO_SRC_ROOM, frame->data, frame->size);
     return 0;
 }
 

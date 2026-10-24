@@ -26,6 +26,9 @@ static int s_req_seq;
 static char  *s_rx_buf;
 static size_t s_rx_len;
 
+static char s_last_join_rid[16];
+static char s_last_confirm_rid[16];
+
 static const char *next_req_id(char *buf, size_t n)
 {
     snprintf(buf, n, "r%d", ++s_req_seq);
@@ -72,6 +75,7 @@ esp_err_t ctrl_send_join(const char *kind, const char *arg)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "join");
     cJSON_AddStringToObject(root, "request_id", next_req_id(rid, sizeof(rid)));
+    strlcpy(s_last_join_rid, rid, sizeof(s_last_join_rid));
     cJSON *target = cJSON_AddObjectToObject(root, "target");
     cJSON_AddStringToObject(target, "kind", kind);
     if (strcmp(kind, "nfc") == 0) {
@@ -121,6 +125,7 @@ esp_err_t ctrl_send_confirm(void)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "type", "confirm");
     cJSON_AddStringToObject(root, "request_id", next_req_id(rid, sizeof(rid)));
+    strlcpy(s_last_confirm_rid, rid, sizeof(s_last_confirm_rid));
     return ctrl_send_json(root);
 }
 
@@ -152,6 +157,16 @@ esp_err_t ctrl_send_leave(void)
     return ctrl_send_json(root);
 }
 
+esp_err_t ctrl_send_op_result(const char *op_id, bool ok, const char *result_json)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "op_result");
+    cJSON_AddStringToObject(root, "op_id", op_id);
+    cJSON_AddBoolToObject(root, "ok", ok);
+    cJSON_AddStringToObject(root, "message", result_json ? result_json : "{}");
+    return ctrl_send_json(root);
+}
+
 /* ---------- inbound dispatch ---------- */
 
 static void post2(app_ev_type_t t, const cJSON *m1, const cJSON *m2, int arg0, bool flag)
@@ -169,7 +184,10 @@ static void dispatch_message(cJSON *root)
 
     if (strcmp(t, "hello_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
-        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
         cJSON *resume = cJSON_GetObjectItem(root, "resume_room");
         const char *rname = NULL, *rcode = NULL;
         if (cJSON_IsObject(resume)) {
@@ -182,6 +200,11 @@ static void dispatch_message(cJSON *root)
                      cJSON_IsBool(muted) ? cJSON_IsTrue(muted) : 0,
                      cJSON_IsTrue(ok));
     } else if (strcmp(t, "join_result") == 0) {
+        cJSON *rid = cJSON_GetObjectItem(root, "request_id");
+        if (cJSON_IsString(rid) && s_last_join_rid[0] &&
+            strcmp(rid->valuestring, s_last_join_rid) != 0) {
+            return;  /* stale join_result from a superseded attempt */
+        }
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *need = cJSON_GetObjectItem(root, "need_media");
         cJSON *room = cJSON_GetObjectItem(root, "room");
@@ -216,21 +239,34 @@ static void dispatch_message(cJSON *root)
             }
         }
     } else if (strcmp(t, "confirm_result") == 0) {
+        cJSON *rid = cJSON_GetObjectItem(root, "request_id");
+        if (cJSON_IsString(rid) && s_last_confirm_rid[0] &&
+            strcmp(rid->valuestring, s_last_confirm_rid) != 0) {
+            return;  /* stale confirm_result must not re-enter TALKING */
+        }
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *room = cJSON_GetObjectItem(root, "room");
         cJSON *n = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "name") : NULL;
+        cJSON *c = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "invite_code") : NULL;
+        cJSON *o = cJSON_IsObject(room) ? cJSON_GetObjectItem(room, "online_count") : NULL;
         app_post_str(APP_EV_CONFIRM_RESULT, cJSON_IsString(n) ? n->valuestring : NULL,
-                     NULL, 0, cJSON_IsTrue(ok));
+                     cJSON_IsString(c) ? c->valuestring : NULL,
+                     cJSON_IsNumber(o) ? o->valueint : 0, cJSON_IsTrue(ok));
     } else if (strcmp(t, "room_info_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
         cJSON *name = cJSON_GetObjectItem(root, "name");
         cJSON *cnt = cJSON_GetObjectItem(root, "online_count");
+        cJSON *code = cJSON_GetObjectItem(root, "invite_code");
         app_post_str(APP_EV_ROOM_INFO_RESULT,
-                     cJSON_IsString(name) ? name->valuestring : NULL, NULL,
+                     cJSON_IsString(name) ? name->valuestring : NULL,
+                     cJSON_IsString(code) ? code->valuestring : NULL,
                      cJSON_IsNumber(cnt) ? cnt->valueint : 0, cJSON_IsTrue(ok));
     } else if (strcmp(t, "mute_result") == 0) {
         cJSON *ok = cJSON_GetObjectItem(root, "ok");
-        cJSON *muted = cJSON_GetObjectItem(root, "muted");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
         app_post(APP_EV_MUTE_RESULT, NULL, NULL,
                  cJSON_IsTrue(muted), cJSON_IsTrue(ok));
     } else if (strcmp(t, "leave_result") == 0) {
@@ -258,6 +294,62 @@ static void dispatch_message(cJSON *root)
         }
         app_post_str(APP_EV_NOTIFY, cJSON_IsString(ev) ? ev->valuestring : NULL,
                      m2, 0, is_name);
+    } else if (strcmp(t, "op") == 0) {
+        /* server-initiated op (cloud MCP). Translate to the packed MCP call
+         * format so the app runs it through the same tool dispatcher; the
+         * reply goes back over this channel via op_result. */
+        cJSON *opid = cJSON_GetObjectItem(root, "op_id");
+        cJSON *op = cJSON_GetObjectItem(root, "op");
+        cJSON *arg = cJSON_GetObjectItem(root, "op_arg");
+        cJSON *muted = cJSON_GetObjectItem(root, "mute");
+        if (!muted) {
+            muted = cJSON_GetObjectItem(root, "muted");
+        }
+        if (!cJSON_IsString(opid) || !cJSON_IsString(op)) {
+            return;
+        }
+        const char *tool = NULL;
+        const char *akey = NULL;
+        if (strcmp(op->valuestring, "join") == 0) {
+            tool = "self.intercom.join"; akey = "invite_code";
+        } else if (strcmp(op->valuestring, "switch") == 0) {
+            tool = "self.intercom.switch"; akey = "room_name";
+        } else if (strcmp(op->valuestring, "status") == 0) {
+            tool = "self.intercom.status";
+        } else if (strcmp(op->valuestring, "set_mute") == 0) {
+            tool = "self.intercom.set_mute";
+        } else if (strcmp(op->valuestring, "leave") == 0) {
+            tool = "self.intercom.leave";
+        } else if (strcmp(op->valuestring, "nfc") == 0 && cJSON_IsString(arg)) {
+            /* test/injection entry: an NFC tap arriving here runs the exact
+             * same executor path a real reader event would (APP_EV_NFC ->
+             * start_join "nfc"), letting us cover it without the reader */
+            app_post_str(APP_EV_NFC, arg->valuestring, NULL, 0, true);
+            ctrl_send_op_result(opid->valuestring, true,
+                                "{\"ok\":true,\"accepted\":true}");
+            return;
+        }
+        if (tool == NULL) {
+            ctrl_send_op_result(opid->valuestring, false,
+                                "{\"ok\":false,\"error\":\"bad_request\"}");
+            return;
+        }
+        cJSON *call = cJSON_CreateObject();
+        cJSON_AddStringToObject(call, "id", opid->valuestring);
+        cJSON_AddStringToObject(call, "name", tool);
+        cJSON *args = cJSON_AddObjectToObject(call, "arguments");
+        if (akey && cJSON_IsString(arg)) {
+            cJSON_AddStringToObject(args, akey, arg->valuestring);
+        }
+        if (cJSON_IsBool(muted)) {
+            cJSON_AddBoolToObject(args, "muted", cJSON_IsTrue(muted));
+        }
+        cJSON_AddBoolToObject(call, "ctrl", true);
+        char *packed = cJSON_PrintUnformatted(call);
+        cJSON_Delete(call);
+        if (packed) {
+            app_post(APP_EV_MCP_CALL, packed, NULL, 0, false);
+        }
     } else if (strcmp(t, "error") == 0) {
         cJSON *e = cJSON_GetObjectItem(root, "error");
         cJSON *code = cJSON_IsObject(e) ? cJSON_GetObjectItem(e, "code") : NULL;
@@ -290,8 +382,9 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         s_rx_len = 0;
         app_post(APP_EV_WS_CONNECTED, NULL, NULL, 0, false);
         break;
+    case WEBSOCKET_EVENT_CLOSED:
     case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "ws disconnected");
+        ESP_LOGW(TAG, "ws disconnected (clean=%d)", (int)(id == WEBSOCKET_EVENT_CLOSED));
         s_connected = false;
         s_rx_len = 0;
         app_post(APP_EV_WS_DISCONNECTED, NULL, NULL, 0, false);
@@ -336,10 +429,12 @@ esp_err_t ctrl_client_init(void)
 esp_err_t ctrl_client_connect(void)
 {
     if (s_ws) {
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
         s_connected = false;
+        xSemaphoreGive(s_tx_lock);
     }
     esp_websocket_client_config_t cfg = {
         .uri = CONFIG_INTERCOM_CTRL_URL,
@@ -362,9 +457,11 @@ esp_err_t ctrl_client_disconnect(void)
 {
     if (s_ws) {
         s_connected = false;
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
         esp_websocket_client_stop(s_ws);
         esp_websocket_client_destroy(s_ws);
         s_ws = NULL;
+        xSemaphoreGive(s_tx_lock);
     }
     return ESP_OK;
 }

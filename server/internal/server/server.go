@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -30,6 +31,8 @@ type ControlServer struct {
 	byDevice  map[string]*Session
 	byHandle  map[int64]*Session
 	orphanICE map[int64][]pendingICE
+	mcp       *MCPAdapter
+	opSeq     uint64
 }
 
 type Session struct {
@@ -47,6 +50,7 @@ type Session struct {
 	janusICE      []pendingICE
 	answerSent    bool
 	joinResps     map[string]*OutMessage // request_id dedup
+	pendingOps    map[string]chan *InMessage // op_id -> result waiter
 	closed        bool
 }
 
@@ -73,23 +77,22 @@ func NewControlServer(cfg Config, store *Store, media Media) *ControlServer {
 func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 	if m.str("janus") != "trickle" {
 		s.mu.Lock()
-		if sess := s.byHandle[handleID]; sess != nil {
-			switch m.str("janus") {
-			case "webrtcup":
-				log.Printf("device %s: webrtc up", sess.deviceID)
-			case "hangup":
-				log.Printf("device %s: media hangup", sess.deviceID)
-				sess.mu.Lock()
-				roomID := sess.roomID
-				sess.mu.Unlock()
-				s.clearMedia(sess)
-				sess.send(&OutMessage{Type: "notify", Event: "media_lost"})
-				if roomID != 0 {
-					s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
-				}
+		sess := s.byHandle[handleID]
+		s.mu.Unlock()
+		if sess == nil {
+			return
+		}
+		switch m.str("janus") {
+		case "webrtcup":
+			log.Printf("device %s: webrtc up", sess.deviceID)
+		case "hangup":
+			log.Printf("device %s: media hangup", sess.deviceID)
+			_, roomID := s.clearMedia(sess)
+			sess.send(&OutMessage{Type: "notify", Event: "media_lost"})
+			if roomID != 0 {
+				s.broadcastPeerChange(roomID, "peer_left", sess.deviceID)
 			}
 		}
-		s.mu.Unlock()
 		return
 	}
 	var cand struct {
@@ -131,6 +134,11 @@ func (s *ControlServer) onMediaEvent(sessionID, handleID int64, m AsyncMsg) {
 	}
 }
 
+// AttachMCP registers the cloud MCP (SSE) endpoints on the server handler.
+func (s *ControlServer) AttachMCP(defaultTarget, token string) {
+	s.mcp = NewMCPAdapter(s, defaultTarget, token)
+}
+
 func (s *ControlServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
@@ -140,6 +148,10 @@ func (s *ControlServer) Handler() http.Handler {
 	})
 	mux.HandleFunc("/admin/register-entry", s.handleRegisterEntry)
 	mux.HandleFunc("/admin/rooms", s.handleRooms)
+	mux.HandleFunc("/admin/op", s.handleAdminOp)
+	if s.mcp != nil {
+		s.mcp.Register(mux)
+	}
 	mux.Handle("/", http.FileServer(http.Dir("tools/browser")))
 	return mux
 }
@@ -163,6 +175,42 @@ func (s *ControlServer) handleRegisterEntry(w http.ResponseWriter, r *http.Reque
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleAdminOp dispatches a server-initiated op to a device and returns the
+// device's op_result verbatim. Used by the mcpproxy bridge and admin scripts.
+func (s *ControlServer) handleAdminOp(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.AdminToken != "" && r.Header.Get("X-Admin-Token") != s.cfg.AdminToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		DeviceID string `json:"device_id"`
+		Op       string `json:"op"`
+		Arg      string `json:"arg"`
+		Muted    *bool  `json:"muted"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" || req.Op == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	res, err := s.DispatchOp(ctx, req.DeviceID, req.Op, req.Arg, req.Muted)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		if oe, ok := err.(*OutError); ok {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": oe})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *ControlServer) handleRooms(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +291,8 @@ func (s *ControlServer) dispatch(sess *Session, m *InMessage) {
 		s.onLeave(ctx, sess, m)
 	case "ping":
 		sess.send(&OutMessage{Type: "pong", RequestID: m.RequestID})
+	case "op_result":
+		s.onOpResult(sess, m)
 	default:
 		sess.send(errOut(m.RequestID, "bad_request", "unknown type "+m.Type))
 	}
@@ -625,6 +675,101 @@ func (s *ControlServer) onConfirm(ctx context.Context, sess *Session, m *InMessa
 	}
 }
 
+// DispatchOp sends a server-initiated op to a connected device and waits for
+// its op_result. ops are serialized per call site by opID uniqueness; a second
+// dispatch for the same op_id returns the first result (callers use fresh ids).
+func (s *ControlServer) DispatchOp(ctx context.Context, deviceID, op, arg string, muted *bool) (*InMessage, error) {
+	s.mu.Lock()
+	sess := s.byDevice[deviceID]
+	s.mu.Unlock()
+	if sess == nil {
+		return nil, &OutError{Code: "target_offline", Message: "目标设备离线"}
+	}
+	opID := fmt.Sprintf("op%d-%d", time.Now().UnixNano(), atomic.AddUint64(&s.opSeq, 1))
+	ch := make(chan *InMessage, 1)
+	sess.mu.Lock()
+	if sess.pendingOps == nil {
+		sess.pendingOps = map[string]chan *InMessage{}
+	}
+	sess.pendingOps[opID] = ch
+	sess.mu.Unlock()
+	defer func() {
+		sess.mu.Lock()
+		delete(sess.pendingOps, opID)
+		sess.mu.Unlock()
+	}()
+	if err := sess.send(&OutMessage{Type: "op", OpID: opID, Op: op, OpArg: arg, OpMute: muted}); err != nil {
+		return nil, &OutError{Code: "send_failed", Message: err.Error()}
+	}
+	select {
+	case res := <-ch:
+		return res, nil
+	case <-ctx.Done():
+		return nil, &OutError{Code: "op_timeout", Message: "设备操作超时"}
+	}
+}
+
+// normalizeOpResult lifts fields from an op_result whose payload is a
+// JSON-encoded `message` string (firmware shape) so callers always see
+// structured mode/room/muted regardless of device implementation.
+func normalizeOpResult(m *InMessage) {
+	if m.Mode != "" || len(m.OKMsg) == 0 || m.OKMsg[0] != '{' {
+		return
+	}
+	var inner struct {
+		OK    *bool   `json:"ok"`
+		Mode  *string `json:"mode"`
+		Muted *bool   `json:"muted"`
+		Room  *string `json:"room"`
+		Code  *string `json:"invite_code"`
+		Count *int    `json:"online_count"`
+		Err   *string `json:"error"`
+		Msg   *string `json:"message"`
+	}
+	if json.Unmarshal([]byte(m.OKMsg), &inner) != nil {
+		return
+	}
+	if inner.OK != nil {
+		m.OK = *inner.OK
+	}
+	if inner.Mode != nil {
+		m.Mode = *inner.Mode
+	}
+	if inner.Muted != nil {
+		m.Muted = inner.Muted
+	}
+	if inner.Room != nil {
+		m.Room = &RoomInfo{Name: *inner.Room}
+		if inner.Code != nil {
+			m.Room.InviteCode = *inner.Code
+		}
+		if inner.Count != nil {
+			m.Room.OnlineCount = *inner.Count
+		}
+	}
+	if !m.OK && m.Error == nil && (inner.Err != nil || inner.Msg != nil) {
+		code, msg := "op_failed", ""
+		if inner.Err != nil {
+			code = *inner.Err
+		}
+		if inner.Msg != nil {
+			msg = *inner.Msg
+		}
+		m.Error = &OutError{Code: code, Message: msg}
+	}
+}
+
+func (s *ControlServer) onOpResult(sess *Session, m *InMessage) {
+	normalizeOpResult(m)
+	sess.mu.Lock()
+	ch := sess.pendingOps[m.OpID]
+	delete(sess.pendingOps, m.OpID)
+	sess.mu.Unlock()
+	if ch != nil {
+		ch <- m
+	}
+}
+
 func (s *ControlServer) broadcastPeerChange(roomID int64, event, deviceID string) {
 	var targets []*Session
 	s.mu.Lock()
@@ -743,6 +888,11 @@ func (s *ControlServer) onDisconnect(sess *Session) {
 	p, roomID := s.clearMedia(sess)
 	sess.mu.Lock()
 	sess.closed = true
+	for opID, ch := range sess.pendingOps { // fail in-flight ops so waiters return fast
+		ch <- &InMessage{OpID: opID, OK: false,
+			Error: &OutError{Code: "target_offline", Message: "设备连接断开"}}
+	}
+	sess.pendingOps = nil
 	sess.mu.Unlock()
 	if p != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
