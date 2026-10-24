@@ -7,6 +7,7 @@
 #include "freertos/queue.h"
 #include "freertos/idf_additions.h"
 #include "esp_attr.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "driver/i2s_std.h"
@@ -16,7 +17,8 @@
 
 #define TAG "audio_dev"
 
-#define RX_QUEUE_LEN     10          /* ~200 ms of jitter headroom */
+#define RX_QUEUE_LEN     150         /* ~3 s headroom: platform TTS stalls up
+                                    * to ~2 s between sentence bursts */
 #define RX_PKT_MAX       512         /* max encoded opus packet */
 #define OUT_FRAME_MS     20
 #define OUT_SAMPLES      (AUDIO_OUTPUT_SAMPLE_RATE * OUT_FRAME_MS / 1000)  /* 480 @24k */
@@ -28,6 +30,8 @@
 #define MIC_TASK_STACK    4096
 #define MIC_TASK_PRIORITY 19  /* Preempt pc_task's DTLS work (priority 18). */
 #define MIC_TASK_CORE     ((portNUM_PROCESSORS > 1) ? 1 : 0)
+#define LINX_PRIME_FRAMES 25    /* ~500 ms runway after an underrun; lets the
+                               * next sentence burst land before draining */
 
 typedef struct {
     int count;
@@ -42,6 +46,9 @@ typedef struct {
 
 static int s_rx_src = AUDIO_SRC_LINX;
 static uint32_t s_rx_accepted[2];   /* admitted packets per source (LINX/ROOM) */
+static uint32_t s_rx_underruns;     /* playback-starved gaps (glitch counter) */
+static bool s_linx_primed;          /* linx stream has its runway buffered */
+static int64_t s_prime_wait_us;     /* when the current prime wait began */
 static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
 
 /* tone frames carry src==AUDIO_SRC_TONE and data[0..1]=freq*10, [2..3]=ms.
@@ -279,6 +286,8 @@ int audio_rx_current_source(void) { return s_rx_src; }
 
 void audio_rx_mark_decoder_reset(void) { s_dec_reset_pending = true; }
 
+static uint32_t s_rx_dropped;   /* queue-full drop-oldest events */
+
 static void audio_rx_enqueue_tagged(int src, const uint8_t *data, int size)
 {
     if (s_rx_queue == NULL || size <= 0 || size > RX_PKT_MAX) {
@@ -290,6 +299,9 @@ static void audio_rx_enqueue_tagged(int src, const uint8_t *data, int size)
         rx_pkt_t drop;
         xQueueReceive(s_rx_queue, &drop, 0);
         xQueueSend(s_rx_queue, &pkt, 0);
+        if (++s_rx_dropped % 10 == 1) {
+            ESP_LOGW(TAG, "rx queue full; dropped n=%u", (unsigned)s_rx_dropped);
+        }
     }
 }
 
@@ -319,17 +331,7 @@ void audio_rx_play_tone(int freq_hz, int ms)
 
 void audio_rx_enqueue(const uint8_t *data, int size)
 {
-    if (s_rx_queue == NULL || size <= 0 || size > RX_PKT_MAX) {
-        return;
-    }
-    rx_pkt_t pkt = { .len = size, .src = s_rx_src };
-    memcpy(pkt.data, data, size);
-    if (xQueueSend(s_rx_queue, &pkt, 0) != pdTRUE) {
-        /* queue full: drop oldest then push newest to bound latency */
-        rx_pkt_t drop;
-        xQueueReceive(s_rx_queue, &drop, 0);
-        xQueueSend(s_rx_queue, &pkt, 0);
-    }
+    audio_rx_enqueue_tagged(s_rx_src, data, size);
 }
 
 void audio_rx_flush(void)
@@ -359,6 +361,7 @@ static void playback_task(void *arg)
     int16_t pcm48[4096];
     bool s_clip_active = false;
     uint32_t s_clip_gen = 0;
+    bool had_audio = false;   /* underruns only count while a stream is live */
     ESP_LOGI(TAG, "playback task up");
     for (;;) {
         /* scheduled announcement frames stream first; the scheduler hands us
@@ -394,8 +397,37 @@ static void playback_task(void *arg)
             s_dec_reset_pending = true;   /* clean seam back to live audio */
             continue;
         }
+        /* linx TTS arrives in sentence bursts with multi-second stalls; after
+         * an underrun rebuild a short runway instead of resuming on one frame.
+         * Room/tone heads skip this — their latency matters more than a gap. */
+        if (s_rx_src == AUDIO_SRC_LINX && !s_linx_primed &&
+            xQueuePeek(s_rx_queue, &pkt, 0) == pdTRUE &&
+            pkt.src == AUDIO_SRC_LINX) {
+            if (uxQueueMessagesWaiting(s_rx_queue) >= LINX_PRIME_FRAMES) {
+                s_linx_primed = true;
+            } else {
+                if (s_prime_wait_us == 0) {
+                    s_prime_wait_us = esp_timer_get_time();
+                }
+                if (esp_timer_get_time() - s_prime_wait_us < 2000000) {
+                    memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));
+                    playback_write(s_pcm24, OUT_SAMPLES);
+                    continue;
+                }
+                s_linx_primed = true;   /* stream tail: play what arrived */
+            }
+        }
         if (xQueueReceive(s_rx_queue, &pkt, pdMS_TO_TICKS(100)) != pdTRUE) {
             /* underflow: keep DMA fed with silence */
+            if (s_linx_primed || s_prime_wait_us) {
+                s_linx_primed = false;
+                s_prime_wait_us = 0;
+            }
+            if (had_audio) {
+                had_audio = false;
+                ++s_rx_underruns;
+                ESP_LOGW(TAG, "rx underrun n=%u", (unsigned)s_rx_underruns);
+            }
             memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));
             playback_write(s_pcm24, OUT_SAMPLES);
             continue;
@@ -424,6 +456,7 @@ static void playback_task(void *arg)
         if (pkt.src != s_rx_src) {
             continue;   /* queued before a source switch; decoder never sees it */
         }
+        had_audio = true;
         if (s_dec_reset_pending) {   /* same-thread reset: safe vs decode */
             s_dec_reset_pending = false;
             audio_decoder_reset();
@@ -456,7 +489,12 @@ esp_err_t audio_dev_init(void)
 {
     ESP_ERROR_CHECK(i2s_tx_init());
     ESP_ERROR_CHECK(i2s_rx_init());
-    s_rx_queue = xQueueCreate(RX_QUEUE_LEN, sizeof(rx_pkt_t));
+    /* deep jitter buffer lives in PSRAM: 150 x 516 B would eat all of SRAM */
+    s_rx_queue = xQueueCreateWithCaps(RX_QUEUE_LEN, sizeof(rx_pkt_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_rx_queue == NULL) {
+        s_rx_queue = xQueueCreate(RX_QUEUE_LEN, sizeof(rx_pkt_t));
+    }
     s_out32 = heap_caps_malloc(OUT_SAMPLES * sizeof(int32_t), MALLOC_CAP_8BIT);
     s_pcm24 = heap_caps_malloc(OUT_SAMPLES * sizeof(int16_t), MALLOC_CAP_8BIT);
     s_mic_queue = xQueueCreateWithCaps(MIC_QUEUE_LEN, sizeof(mic_frame_t),
