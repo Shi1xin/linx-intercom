@@ -1,148 +1,195 @@
+/* ESP-SR WakeNet via AFE front-end, same architecture as xiaozhi's
+ * AfeAudioEngine: mic frames feed AFE directly; a fetch task blocks on
+ * fetch_with_delay and checks wakeup_state from the fetch result. */
 #include "wake_word.h"
 
-#include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
-#include "freertos/task.h"
+#include "app_events.h"
+#include "wake_trace.h"
+#include "esp_afe_config.h"
+#include "esp_afe_sr_iface.h"
+#include "esp_afe_sr_models.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_vad.h"
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
 #include "model_path.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
-#include "app_events.h"
-#include "sdkconfig.h"
+#define TAG "wake"
 
-#define WAKE_FEED_MS   20
-#define WAKE_FRAME     (16000 * WAKE_FEED_MS / 1000)   /* 320 samples */
-#define WAKE_QUEUE_LEN 10
+static const esp_afe_sr_iface_t *s_afe_iface;
+static esp_afe_sr_data_t *s_afe;
+static srmodel_list_t *s_models;
+static atomic_bool s_enabled;
+static atomic_bool s_mic_hold;
+static int16_t *s_feed_buf;
+static int s_feed_len;
+static int s_feed_chunk;
+static int s_detect_count;
 
-static const char *TAG = "wake";
+#if CONFIG_INTERCOM_WAKE_SELFTEST
+#include "inj_pcm.h"
+#endif
 
-static const esp_wn_iface_t *s_wn;
-static model_iface_data_t   *s_model;
-static srmodel_list_t       *s_models;
-static QueueHandle_t         s_q;
-static volatile bool         s_enabled = true;
-static volatile bool         s_mic_hold;         /* injection owns the queue */
-static int                   s_det_count;
-static int                   s_drop_count;
-
-static void wake_task(void *arg)
+/* Feed mono 16 kHz samples; AFE consumes get_feed_chunksize() samples per
+ * call, so accumulate mic frames until one full chunk is ready. */
+static void feed_samples(const int16_t *pcm, int n)
 {
-    int chunk = s_wn->get_samp_chunksize(s_model);
-    int16_t *buf = heap_caps_malloc(chunk * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t *frame = malloc(WAKE_FRAME * sizeof(int16_t));
-    int fill = 0;
-    ESP_LOGI(TAG, "wakenet task up: chunk=%d", chunk);
-    for (;;) {
-        if (xQueueReceive(s_q, frame, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        const int16_t *p = frame;
-        int n = WAKE_FRAME;
-        while (n > 0) {
-            if (!s_enabled) {
-                fill = 0;
-                break;
+    while (n > 0) {
+        int room = s_feed_chunk - (s_feed_len % s_feed_chunk);
+        int take = n < room ? n : room;
+        memcpy(s_feed_buf + s_feed_len, pcm, take * sizeof(int16_t));
+        s_feed_len += take;
+        pcm += take;
+        n -= take;
+        if (s_feed_len % s_feed_chunk == 0) {
+            for (int off = 0; off + s_feed_chunk <= s_feed_len; off += s_feed_chunk) {
+                s_afe_iface->feed(s_afe, s_feed_buf + off);
+                wake_trace_feed(s_feed_buf + off, s_feed_chunk);
             }
-            int take = chunk - fill;
-            if (take > n) take = n;
-            memcpy(buf + fill, p, take * sizeof(int16_t));
-            fill += take;
-            p += take;
-            n -= take;
-            if (fill == chunk) {
-                fill = 0;
-                int r = s_wn->detect(s_model, buf);
-                if (++s_det_count % 100 == 0) {
-                    ESP_LOGI(TAG, "wake alive det=%d drop=%d en=%d",
-                             s_det_count, s_drop_count, (int)s_enabled);
-                }
-                if (r > 0) {
-                    ESP_LOGI(TAG, "wake word detected (idx %d)", r);
-                    s_enabled = false;      /* app re-arms after the round */
-                    app_post(APP_EV_WAKE, NULL, NULL, 0, false);
-                }
-            }
+            s_feed_len = 0;
         }
+    }
+}
+
+void wake_word_feed(const int16_t *pcm, int n)
+{
+    if (!s_afe || s_mic_hold || !s_enabled) {
+        return;
+    }
+    feed_samples(pcm, n);
+}
+
+void wake_word_enable(bool en)
+{
+    if (!s_afe_iface || !s_afe) {
+        return;
+    }
+    s_enabled = en;
+    if (en) {
+        s_afe_iface->enable_wakenet(s_afe);
+    } else {
+        s_afe_iface->disable_wakenet(s_afe);
     }
 }
 
 #if CONFIG_INTERCOM_WAKE_SELFTEST
-#include "inj_pcm.h"
-/* one-shot digital injection of a clean utterance through the same queue +
- * chunk path the mic uses — isolates model/pipeline from room acoustics */
-static void inj_task(void *arg)
+static void inject_task(void *arg)
 {
+    (void)arg;
     vTaskDelay(pdMS_TO_TICKS(8000));
-    s_mic_hold = true;               /* stop mic frames from interleaving */
-    vTaskDelay(pdMS_TO_TICKS(100));  /* let the queue drain stale mic audio */
-    xQueueReset(s_q);
-    ESP_LOGI(TAG, "inject %d samples", inj_pcm_n);
-    for (int i = 0; i + WAKE_FRAME <= inj_pcm_n; i += WAKE_FRAME) {
-        while (xQueueSend(s_q, inj_pcm + i, pdMS_TO_TICKS(100)) != pdTRUE) {}
-        vTaskDelay(pdMS_TO_TICKS(WAKE_FEED_MS));
+    s_mic_hold = true;
+    vTaskDelay(pdMS_TO_TICKS(200)); /* let in-flight mic frames flush */
+    s_feed_len = 0;
+    ESP_LOGI(TAG, "wake: inject %d samples", inj_pcm_n);
+    for (int off = 0; off < inj_pcm_n; off += s_feed_chunk) {
+        int n = inj_pcm_n - off < s_feed_chunk ? inj_pcm_n - off : s_feed_chunk;
+        memset(s_feed_buf, 0, s_feed_chunk * sizeof(int16_t));
+        memcpy(s_feed_buf, inj_pcm + off, n * sizeof(int16_t));
+        s_afe_iface->feed(s_afe, s_feed_buf);
+        vTaskDelay(pdMS_TO_TICKS(s_feed_chunk * 1000 / 16000));
     }
-    vTaskDelay(pdMS_TO_TICKS(300));  /* tail chunks still in flight */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    s_feed_len = 0;           /* drain before unholding mic feeds */
     s_mic_hold = false;
-    ESP_LOGI(TAG, "inject done");
+    ESP_LOGI(TAG, "wake: inject done");
     vTaskDelete(NULL);
 }
 #endif
+
+static void fetch_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "wake: fetch task up, feed_chunk=%d fetch_chunk=%d",
+             s_feed_chunk, s_afe_iface->get_fetch_chunksize(s_afe));
+    int last_log = 0;
+    for (;;) {
+        afe_fetch_result_t *res = s_afe_iface->fetch_with_delay(s_afe, portMAX_DELAY);
+        if (!res || res->ret_value == ESP_FAIL) {
+            continue;
+        }
+        s_detect_count++;
+        if (s_detect_count - last_log >= 100) {
+            last_log = s_detect_count;
+            ESP_LOGI(TAG, "wake alive det=%d en=%d vol=%.1f", s_detect_count,
+                     s_enabled ? 1 : 0, res->data_volume);
+        }
+        if (res->wakeup_state == WAKENET_DETECTED && res->wake_word_index > 0) {
+            ESP_LOGI(TAG, "wake word detected (idx %d vol=%.1f)",
+                     res->wake_word_index, res->data_volume);
+            s_enabled = false;
+            s_afe_iface->disable_wakenet(s_afe);
+            app_post(APP_EV_WAKE, NULL, NULL, 0, false);
+        }
+    }
+}
 
 esp_err_t wake_word_init(void)
 {
     s_models = esp_srmodel_init("model");
     if (!s_models) {
-        ESP_LOGE(TAG, "model partition missing");
+        ESP_LOGE(TAG, "srmodel init failed (model partition missing?)");
         return ESP_FAIL;
     }
     char *name = esp_srmodel_filter(s_models, ESP_WN_PREFIX, "nihaoxiaozhi");
     if (!name) {
-        ESP_LOGE(TAG, "nihaoxiaozhi model not packed");
+        ESP_LOGE(TAG, "no nihaoxiaozhi model in partition");
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "wake model=%s", name);
+
+    afe_config_t *cfg = afe_config_init("M", s_models, AFE_TYPE_FD, AFE_MODE_LOW_COST);
+    if (!cfg) {
+        ESP_LOGE(TAG, "afe_config_init failed");
         return ESP_FAIL;
     }
-    s_wn = esp_wn_handle_from_name(name);
-    if (!s_wn) {
-        ESP_LOGE(TAG, "no wakenet iface for %s", name);
+    cfg->aec_init = false;
+    cfg->ns_init = false;
+    cfg->vad_init = true;
+    cfg->vad_mode = VAD_MODE_0;
+    cfg->vad_min_noise_ms = 100;
+    cfg->wakenet_init = true;
+    cfg->wakenet_model_name = name;
+    cfg->agc_init = false;
+    cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+
+    s_afe_iface = esp_afe_handle_from_config(cfg);
+    ESP_LOGI(TAG, "AFE config wakenet_mode=%d", (int)cfg->wakenet_mode);
+    if (s_afe_iface) {
+        s_afe = s_afe_iface->create_from_config(cfg);
+    }
+    afe_config_free(cfg);
+    if (!s_afe_iface || !s_afe) {
+        ESP_LOGE(TAG, "AFE create failed");
         return ESP_FAIL;
     }
-    s_model = s_wn->create(name, DET_MODE_95);   /* model in PSRAM: keeps detect
-                                                  * off the flash bus so core-0
-                                                  * audio code is not stalled */
-    if (!s_model) {
-        ESP_LOGE(TAG, "wakenet create failed");
-        return ESP_FAIL;
-    }
-    s_q = xQueueCreate(WAKE_QUEUE_LEN, WAKE_FRAME * sizeof(int16_t));
-    if (!s_q) {
+    s_afe_iface->print_pipeline(s_afe);
+
+    s_feed_chunk = s_afe_iface->get_feed_chunksize(s_afe);
+    s_feed_buf = heap_caps_malloc(s_feed_chunk * sizeof(int16_t), MALLOC_CAP_8BIT);
+    if (!s_feed_buf) {
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreatePinnedToCore(wake_task, "wake", 6 * 1024, NULL,
-                                4, NULL, 1) != pdPASS) {
+
+    s_enabled = true;
+    s_afe_iface->enable_wakenet(s_afe);
+    esp_err_t trace_err = wake_trace_init();
+    if (trace_err != ESP_OK) {
+        ESP_LOGW(TAG, "PCM trace init failed: %s", esp_err_to_name(trace_err));
+    }
+
+    BaseType_t ok = xTaskCreatePinnedToCore(fetch_task, "wake_fetch", 6 * 1024,
+                                            NULL, 5, NULL, 1);
+    if (ok != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
 #if CONFIG_INTERCOM_WAKE_SELFTEST
-    xTaskCreate(inj_task, "wake_inj", 3 * 1024, NULL, 3, NULL);
+    xTaskCreate(inject_task, "wake_inj", 4 * 1024, NULL, 4, NULL);
 #endif
-    ESP_LOGI(TAG, "wakenet up: model=%s", name);
     return ESP_OK;
-}
-
-void wake_word_feed(const int16_t *pcm, int n)
-{
-    if (s_mic_hold || !s_q || n != WAKE_FRAME) {
-        return;
-    }
-    if (xQueueSend(s_q, pcm, 0) != pdTRUE) {
-        s_drop_count++;          /* detect task behind: frame dropped */
-    }
-}
-
-void wake_word_enable(bool on)
-{
-    s_enabled = on;
 }

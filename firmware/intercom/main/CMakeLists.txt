@@ -13,6 +13,7 @@ idf_component_register(
         "linx_ota.c"
         "linx_client.c"
         "wake_word.c"
+        "wake_trace.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
@@ -28,4 +29,5 @@ idf_component_register(
         driver
         esp_timer
         esp_common
+        mbedtls
 )

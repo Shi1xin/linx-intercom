@@ -89,7 +89,28 @@ menu "Intercom Configuration"
         default n
         help
             Bench self-test: feeds a compiled-in 16 kHz 'ni hao xiao zhi'
-            sample through the normal feed/queue/detect path once per boot.
+            sample through the normal AFE feed/fetch path once per boot.
             Verifies model load + pipeline without any acoustic source.
+
+    config INTERCOM_WAKE_PCM_TRACE
+        bool "Keep a bench-only PCM input ring and export snapshots on unmute"
+        depends on SPIRAM
+        default n
+        help
+            Keeps the last eight seconds of mono 16 kHz AFE input in PSRAM.
+            An unmute transition requests a snapshot uploaded by a low-priority
+            task. Use a trusted local HTTP receiver for acoustic diagnostics;
+            when the HTTP upload fails the snapshot falls back to an indexed,
+            SHA-verified console dump.
+
+    config INTERCOM_WAKE_PCM_TRACE_URL
+        string "Trusted local PCM trace receiver HTTP URL"
+        depends on INTERCOM_WAKE_PCM_TRACE
+        default ""
+
+    config INTERCOM_WAKE_PCM_TRACE_TOKEN
+        string "PCM trace receiver bearer token"
+        depends on INTERCOM_WAKE_PCM_TRACE
+        default ""
 
 endmenu

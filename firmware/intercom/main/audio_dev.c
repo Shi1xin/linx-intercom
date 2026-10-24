@@ -5,6 +5,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "driver/i2s_std.h"
@@ -19,6 +21,7 @@
 #define OUT_SAMPLES      (AUDIO_OUTPUT_SAMPLE_RATE * OUT_FRAME_MS / 1000)  /* 480 @24k */
 #define DMA_DESC_NUM     6
 #define DMA_FRAME_NUM    240
+#define MIC_DMA_DESC_NUM 12   /* ~165 ms of queued RX headroom at 16 kHz */
 
 typedef struct {
     int      len;
@@ -27,6 +30,7 @@ typedef struct {
 } rx_pkt_t;
 
 static int s_rx_src = AUDIO_SRC_LINX;
+static uint32_t s_rx_accepted[2];   /* admitted packets per source (LINX/ROOM) */
 static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
 
 /* tone frames carry src==AUDIO_SRC_TONE and data[0..1]=freq*10, [2..3]=ms.
@@ -35,6 +39,8 @@ static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
 
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
+static portMUX_TYPE s_mic_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_mic_rx_overflows;
 static QueueHandle_t     s_rx_queue;
 static TaskHandle_t      s_play_task;
 static volatile int      s_volume = 70;
@@ -42,6 +48,26 @@ static int32_t          *s_out32;     /* OUT_SAMPLES int32 for I2S tx */
 static int16_t          *s_pcm24;     /* resampled 24k pcm */
 
 /* ---------- I2S ---------- */
+
+static bool IRAM_ATTR on_mic_rx_overflow(i2s_chan_handle_t handle,
+                                       i2s_event_data_t *event, void *ctx)
+{
+    (void)handle;
+    (void)event;
+    (void)ctx;
+    portENTER_CRITICAL_ISR(&s_mic_stats_lock);
+    ++s_mic_rx_overflows;
+    portEXIT_CRITICAL_ISR(&s_mic_stats_lock);
+    return false;
+}
+
+uint32_t audio_dev_mic_rx_overflows(void)
+{
+    portENTER_CRITICAL(&s_mic_stats_lock);
+    uint32_t count = s_mic_rx_overflows;
+    portEXIT_CRITICAL(&s_mic_stats_lock);
+    return count;
+}
 
 static esp_err_t i2s_tx_init(void)
 {
@@ -80,7 +106,7 @@ static esp_err_t i2s_rx_init(void)
     i2s_chan_config_t chan_cfg = {
         .id = I2S_NUM_1,
         .role = I2S_ROLE_MASTER,
-        .dma_desc_num = DMA_DESC_NUM,
+        .dma_desc_num = MIC_DMA_DESC_NUM,
         .dma_frame_num = DMA_FRAME_NUM,
         .auto_clear_after_cb = false,
         .auto_clear_before_cb = false,
@@ -108,6 +134,10 @@ static esp_err_t i2s_rx_init(void)
     ESP_LOGI(TAG, "mic i2s rx rate=%d slot=left",
              (int)std_cfg.clk_cfg.sample_rate_hz);
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx, &std_cfg));
+    const i2s_event_callbacks_t callbacks = {
+        .on_recv_q_ovf = on_mic_rx_overflow,
+    };
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(s_rx, &callbacks, NULL));
     return i2s_channel_enable(s_rx);
 }
 
@@ -136,6 +166,7 @@ void audio_rx_set_source(int src)
 {
     if (src != s_rx_src) {
         s_rx_src = src;
+        ESP_LOGI(TAG, "audio rx source=%d", src);
         audio_rx_flush();          /* drop the other source's stale frames */
         s_dec_reset_pending = true; /* decoder reset runs on the playback task:
                                      * resetting here would race an in-flight
@@ -165,6 +196,13 @@ void audio_rx_enqueue_src(int src, const uint8_t *data, int size)
 {
     if (src != s_rx_src && src != AUDIO_SRC_TONE) {
         return;   /* arbitration: only the active source feeds the decoder */
+    }
+    if ((src == AUDIO_SRC_LINX || src == AUDIO_SRC_ROOM) &&
+        size > 0 && size <= RX_PKT_MAX) {
+        if (++s_rx_accepted[src] % 250 == 0) {
+            ESP_LOGI(TAG, "audio rx accepted src=%d n=%lu",
+                     src, (unsigned long)s_rx_accepted[src]);
+        }
     }
     audio_rx_enqueue_tagged(src, data, size);
 }
@@ -285,6 +323,13 @@ esp_err_t audio_dev_init(void)
     if (s_rx_queue == NULL || s_out32 == NULL || s_pcm24 == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    xTaskCreatePinnedToCore(playback_task, "aud_play", 30 * 1024, NULL, 10, &s_play_task, 1);
-    return s_play_task ? ESP_OK : ESP_FAIL;
+#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    const UBaseType_t stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const UBaseType_t stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(playback_task, "aud_play",
+                                                    30 * 1024, NULL, 10,
+                                                    &s_play_task, 1, stack_caps);
+    return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

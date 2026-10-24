@@ -13,6 +13,9 @@ esp_err_t audio_dev_init(void);
  * Blocks until `samples` are captured. Returns sample count or <0 on error. */
 int  audio_dev_mic_read(int16_t *out, int samples);
 
+/* Cumulative RX DMA queue overflows since boot, sampled under the ISR lock. */
+uint32_t audio_dev_mic_rx_overflows(void);
+
 /* Feed an encoded downlink frame (called from peer on_audio_data ctx).
  * Copies data; drops when queue is full (jitter). */
 void audio_rx_enqueue(const uint8_t *data, int size);

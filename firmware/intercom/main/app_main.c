@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -34,6 +35,7 @@
 #include "linx_ota.h"
 #include "linx_client.h"
 #include "wake_word.h"
+#include "wake_trace.h"
 
 #define TAG "app"
 
@@ -54,6 +56,7 @@ static volatile bool s_muted;
 static volatile bool s_command_active;      /* command key held: mic -> linx */
 static volatile bool s_wake_listen;         /* wake word opened a linx listen round */
 static volatile bool s_linx_playing;        /* platform TTS is on the speaker */
+static bool s_linx_reply_pending;           /* a request we sent still owes a TTS reply */
 static TickType_t      s_wake_tick;         /* wake listen round opened at */
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_linx_reconnect_timer;
@@ -149,13 +152,16 @@ static bool in_intercom(void)
 
 static void update_linx_gate(void)
 {
-    bool allow = !in_intercom() || esp_timer_get_time() < s_tts_window_until;
+    bool allow = !in_intercom() ||
+                 (s_linx_playing && s_linx_reply_pending &&
+                  esp_timer_get_time() < s_tts_window_until);
     linx_set_playback_gate(allow);
     audio_rx_set_source(allow ? AUDIO_SRC_LINX : AUDIO_SRC_ROOM);
 }
 
 static void open_tts_window(void)
 {
+    s_linx_reply_pending = true;
     s_tts_window_until = esp_timer_get_time() + (int64_t)TTS_WINDOW_MS * 1000;
     update_linx_gate();
 }
@@ -180,9 +186,13 @@ static void set_state(app_state_t s)
 
 static void apply_mute(bool muted)
 {
+    bool was_muted = s_muted;
     s_muted = muted;
     nvs_store_set_muted(muted);
     ESP_LOGI(TAG, "muted=%d", muted);
+    if (was_muted && !muted) {
+        wake_trace_request();
+    }
 }
 
 static void start_join_ex(const char *kind, const char *arg, bool auto_rejoin)
@@ -329,6 +339,15 @@ static void linx_bootstrap(void)
 
 /* ---------- uplink capture task ---------- */
 
+/* Log a warning when one capture stage blocks the loop over 40 ms */
+static void capture_trace_stage(const char *stage, int64_t started_us)
+{
+    int64_t elapsed = esp_timer_get_time() - started_us;
+    if (elapsed > 40000) {
+        ESP_LOGW(TAG, "capture stage=%s elapsed_us=%lld", stage, (long long)elapsed);
+    }
+}
+
 static void capture_task(void *arg)
 {
     int16_t *pcm = heap_caps_malloc(MIC_FRAME_SAMPLES * sizeof(int16_t), MALLOC_CAP_8BIT);
@@ -341,7 +360,9 @@ static void capture_task(void *arg)
     int32_t mic_peak = 0;
     int64_t mic_log_start = esp_timer_get_time();
     for (;;) {
+        int64_t t0 = esp_timer_get_time();
         int n = audio_dev_mic_read(pcm, MIC_FRAME_SAMPLES);
+        capture_trace_stage("read", t0);
         if (n <= 0) {
             vTaskDelay(pdMS_TO_TICKS(MIC_FRAME_MS));
             continue;
@@ -356,6 +377,13 @@ static void capture_task(void *arg)
             ESP_LOGI(TAG, "mic peak=%d samples=%lu elapsed_us=%lld",
                      (int)mic_peak, (unsigned long)mic_samples,
                      (long long)(now - mic_log_start));
+            ESP_LOGI(TAG, "mic resources internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u stack_hwm=%u mic_overflows=%lu",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                     (unsigned long)audio_dev_mic_rx_overflows());
             mic_samples = 0;
             mic_peak = 0;
             mic_log_start = now;
@@ -367,7 +395,9 @@ static void capture_task(void *arg)
          * while platform TTS is playing so the speaker cannot re-trigger it.
          * stays armed during linx outages so a flap does not kill the word */
         if (!s_command_active && !s_wake_listen && !s_linx_playing) {
+            t0 = esp_timer_get_time();
             wake_word_feed(pcm, n);
+            capture_trace_stage("wake", t0);
         }
         if (s_wake_listen) {
             /* wake-triggered auto round: stream to linx until the platform
@@ -376,11 +406,17 @@ static void capture_task(void *arg)
                 xTaskGetTickCount() - s_wake_tick > pdMS_TO_TICKS(15000)) {
                 s_wake_listen = false;
                 wake_word_enable(true);
+                t0 = esp_timer_get_time();
                 linx_send_listen("stop", "auto");
+                capture_trace_stage("listen", t0);
             } else {
+                t0 = esp_timer_get_time();
                 int enc = audio_opus_encode(pcm, n, pkt, 512);
+                capture_trace_stage("encode", t0);
                 if (enc > 0) {
+                    t0 = esp_timer_get_time();
                     linx_send_audio(pkt, enc);
+                    capture_trace_stage("linx_audio", t0);
                 }
             }
             continue;
@@ -393,16 +429,24 @@ static void capture_task(void *arg)
             if (!s_linx_listen_sent && linx_client_is_connected() &&
                 xTaskGetTickCount() - s_cmd_press_tick > pdMS_TO_TICKS(CMD_LISTEN_DELAY_MS)) {
                 s_linx_listen_sent = true;
+                t0 = esp_timer_get_time();
                 linx_send_listen("start", "manual");
+                capture_trace_stage("listen", t0);
                 if (!s_command_active) {   /* released mid-arm: close orphan listen */
                     s_linx_listen_sent = false;
+                    t0 = esp_timer_get_time();
                     linx_send_listen("stop", "manual");
+                    capture_trace_stage("listen", t0);
                 }
             }
             if (s_linx_listen_sent) {
+                t0 = esp_timer_get_time();
                 int enc = audio_opus_encode(pcm, n, pkt, 512);
+                capture_trace_stage("encode", t0);
                 if (enc > 0) {
+                    t0 = esp_timer_get_time();
                     linx_send_audio(pkt, enc);
+                    capture_trace_stage("linx_audio", t0);
                 }
             }
             continue;
@@ -414,9 +458,13 @@ static void capture_task(void *arg)
         if (s_muted) {
             /* send a silence frame periodically so Janus keepalive never
              * hangs up a muted-only leg (root cause of the rejoin churn) */
+            t0 = esp_timer_get_time();
             int enc = audio_opus_encode(s_pcm_silence, MIC_FRAME_SAMPLES, pkt, 512);
+            capture_trace_stage("encode", t0);
             if (enc > 0 && (dbg % 25 == 0)) {   /* ~500ms cadence */
+                t0 = esp_timer_get_time();
                 rtc_peer_send_audio(pkt, enc, pts);
+                capture_trace_stage("rtc_audio", t0);
             }
             pts += RTP_PTS_STEP;   /* keep the wire clock at 48k even while muted */
             continue;
@@ -425,9 +473,13 @@ static void capture_task(void *arg)
             was_connected = true;
             pts = 0; /* fresh peer: restart RTP timestamps */
         }
+        t0 = esp_timer_get_time();
         int enc = audio_opus_encode(pcm, n, pkt, 512);
+        capture_trace_stage("encode", t0);
         if (enc > 0) {
+            t0 = esp_timer_get_time();
             rtc_peer_send_audio(pkt, enc, pts);
+            capture_trace_stage("rtc_audio", t0);
             pts += RTP_PTS_STEP;
         }
     }
@@ -843,6 +895,9 @@ static void on_linx_disconnected(void)
         wake_word_enable(true);
     }
     s_linx_playing = false;
+    s_linx_reply_pending = false;
+    s_tts_window_until = esp_timer_get_time();
+    update_linx_gate();
     if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
         /* linx-scoped reply is undeliverable; ctrl ops still owe the server a
          * result on the other channel, keep them pending */
@@ -882,10 +937,17 @@ static void on_wake(void)
 
 static void on_linx_tts(app_event_t *ev)
 {
-    s_linx_playing = ev->flag;
     if (ev->flag) {
-        /* tts start inside an open window (or linx mode) plays; otherwise the
-         * gate already drops the audio frames */
+        /* unsolicited platform audio (e.g. a goodbye for a session we did
+         * not open) must not steal the room downlink */
+        if (in_intercom() && !s_linx_reply_pending &&
+            !s_wake_listen && !s_command_active) {
+            ESP_LOGI(TAG, "linx tts ignored in room (no pending reply)");
+            s_linx_playing = false;
+            update_linx_gate();
+            return;
+        }
+        s_linx_playing = true;
         if (s_wake_listen) {
             /* the platform answered the wake round; stop streaming */
             s_wake_listen = false;
@@ -893,10 +955,13 @@ static void on_linx_tts(app_event_t *ev)
         }
         /* tts start is the platform's own signal that reply audio follows:
          * open the gate now rather than counting from request time — slow
-         * agent rounds must not outlive the window before audio arrives */
+         * agent rounds must not outlive the window before audio arrives.
+         * also refreshes the deadline for an expected late reply. */
         open_tts_window();
     } else {
-        /* tts stop: the reply round is over; close the window in intercom */
+        /* tts stop: the reply round is over; nothing is owed any more */
+        s_linx_playing = false;
+        s_linx_reply_pending = false;
         if (in_intercom()) {
             s_tts_window_until = esp_timer_get_time();
         }
@@ -1009,6 +1074,8 @@ static void app_task(void *arg)
         case APP_EV_LINX_TOOLS_LISTED: on_linx_tools_listed(); break;
         case APP_EV_LINX_TTS:          on_linx_tts(&ev); break;
         case APP_EV_LINX_ABORT:
+            s_linx_playing = false;
+            s_linx_reply_pending = false;
             s_tts_window_until = esp_timer_get_time();
             if (s_wake_listen) {
                 s_wake_listen = false;
@@ -1097,7 +1164,15 @@ void app_main(void)
     };
     esp_timer_create(&tmr3, &s_op_timer);
 
-    xTaskCreatePinnedToCore(capture_task, "aud_cap", 40 * 1024, NULL, 9, NULL, 0);
+#if CONFIG_SPIRAM && CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+    const UBaseType_t cap_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const UBaseType_t cap_stack_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    ESP_ERROR_CHECK(xTaskCreatePinnedToCoreWithCaps(capture_task, "aud_cap",
+                                                    40 * 1024, NULL, 9, NULL, 0,
+                                                    cap_stack_caps) == pdPASS
+                    ? ESP_OK : ESP_ERR_NO_MEM);
     xTaskCreatePinnedToCore(app_task, "app", 8 * 1024, NULL, 6, NULL, 0);
 
     ESP_ERROR_CHECK(wifi_sta_start());
