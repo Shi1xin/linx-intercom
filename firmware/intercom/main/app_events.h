@@ -49,6 +49,7 @@ typedef enum {
     APP_EV_LINX_RECONNECT_TIMER,
     APP_EV_OP_TIMEOUT,        /* pending room op watchdog */
     APP_EV_NFC,               /* msg = nfc entry_id (hardware or injected test) */
+    APP_EV_WAKE,              /* wakenet fired: open a linx listen round */
 } app_ev_type_t;
 
 typedef struct {

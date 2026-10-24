@@ -297,6 +297,7 @@ static void handle_text(const char *data, int len)
          * sentence_start as "still playing" so the window stays open.
          * malformed frames (missing/non-string state) are ignored. */
         if (cJSON_IsString(st)) {
+            ESP_LOGI(TAG, "linx tts state=%s", st->valuestring);
             bool start = strcmp(st->valuestring, "start") == 0;
             app_post(APP_EV_LINX_TTS, NULL, NULL, 0,
                      start || strcmp(st->valuestring, "sentence_start") == 0);
@@ -335,6 +336,11 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     case WEBSOCKET_EVENT_DATA:
         if (e->op_code == 0x2) {
             /* binary = platform TTS opus frame */
+            static int s_tts_frames;
+            if (++s_tts_frames == 1 || s_tts_frames % 50 == 0) {
+                ESP_LOGI(TAG, "linx tts frame %dB gate=%d n=%d",
+                         e->data_len, (int)s_play_gate, s_tts_frames);
+            }
             if (s_play_gate) {
                 audio_rx_enqueue_src(AUDIO_SRC_LINX, (const uint8_t *)e->data_ptr, e->data_len);
             }

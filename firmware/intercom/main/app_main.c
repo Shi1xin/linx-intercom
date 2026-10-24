@@ -33,6 +33,7 @@
 #include "cmd_input.h"
 #include "linx_ota.h"
 #include "linx_client.h"
+#include "wake_word.h"
 
 #define TAG "app"
 
@@ -51,6 +52,9 @@ static app_state_t s_state_before_cmd = APP_STATE_TALKING;
 static app_state_t s_state_before_join = APP_STATE_IDLE;
 static volatile bool s_muted;
 static volatile bool s_command_active;      /* command key held: mic -> linx */
+static volatile bool s_wake_listen;         /* wake word opened a linx listen round */
+static volatile bool s_linx_playing;        /* platform TTS is on the speaker */
+static TickType_t      s_wake_tick;         /* wake listen round opened at */
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_linx_reconnect_timer;
 static esp_timer_handle_t s_op_timer;
@@ -348,6 +352,30 @@ static void capture_task(void *arg)
             ESP_LOGI(TAG, "mic peak=%d", (int)peak);
         }
         audio_proc_mic(pcm, n);
+        vTaskDelay(1);   /* 1 ms block: when encode keeps the loop hot the idle
+                          * task still gets serviced (task_wdt on core 0) */
+        /* wake detection runs whenever no listen round owns the mic; paused
+         * while platform TTS is playing so the speaker cannot re-trigger it.
+         * stays armed during linx outages so a flap does not kill the word */
+        if (!s_command_active && !s_wake_listen && !s_linx_playing) {
+            wake_word_feed(pcm, n);
+        }
+        if (s_wake_listen) {
+            /* wake-triggered auto round: stream to linx until the platform
+             * answers (tts) or the safety timeout fires */
+            if (!linx_client_is_connected() ||
+                xTaskGetTickCount() - s_wake_tick > pdMS_TO_TICKS(15000)) {
+                s_wake_listen = false;
+                wake_word_enable(true);
+                linx_send_listen("stop", "auto");
+            } else {
+                int enc = audio_opus_encode(pcm, n, pkt, 512);
+                if (enc > 0) {
+                    linx_send_audio(pkt, enc);
+                }
+            }
+            continue;
+        }
         if (s_command_active) {
             /* hold-to-talk: command audio goes to Linx in either mode; the
              * room uplink is paused while the key is held. The listen round
@@ -550,6 +578,11 @@ static void on_cmd_press(void)
     }
     /* hold-to-talk toward the Linx agent in both linx and intercom modes;
      * the actual listen start is deferred in capture_task */
+    if (s_wake_listen) {        /* command key takes over an open wake round */
+        s_wake_listen = false;
+        wake_word_enable(true);
+        linx_send_listen("stop", "auto");
+    }
     if (!s_command_active) {
         s_command_active = true;
         s_linx_listen_sent = false;
@@ -796,6 +829,11 @@ static void on_linx_disconnected(void)
     /* platform loss does not touch the room; retry in background.
      * A pending op reply is session-scoped and undeliverable — drop it so the
      * op budget is not held by a dead session. */
+    if (s_wake_listen) {
+        s_wake_listen = false;
+        wake_word_enable(true);
+    }
+    s_linx_playing = false;
     if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
         /* linx-scoped reply is undeliverable; ctrl ops still owe the server a
          * result on the other channel, keep them pending */
@@ -819,12 +857,35 @@ static void on_linx_tools_listed(void)
 #endif
 }
 
+static void on_wake(void)
+{
+    if (s_wake_listen || s_command_active || !linx_client_is_connected()) {
+        wake_word_enable(true);
+        return;
+    }
+    ESP_LOGI(TAG, "wake -> linx listen round");
+    s_wake_listen = true;
+    s_wake_tick = xTaskGetTickCount();
+    linx_send_detect_text("你好小智");
+    linx_send_listen("start", "auto");
+    open_tts_window();          /* the agent reply belongs to this round */
+}
+
 static void on_linx_tts(app_event_t *ev)
 {
+    s_linx_playing = ev->flag;
     if (ev->flag) {
         /* tts start inside an open window (or linx mode) plays; otherwise the
          * gate already drops the audio frames */
-        update_linx_gate();
+        if (s_wake_listen) {
+            /* the platform answered the wake round; stop streaming */
+            s_wake_listen = false;
+            wake_word_enable(true);
+        }
+        /* tts start is the platform's own signal that reply audio follows:
+         * open the gate now rather than counting from request time — slow
+         * agent rounds must not outlive the window before audio arrives */
+        open_tts_window();
     } else {
         /* tts stop: the reply round is over; close the window in intercom */
         if (in_intercom()) {
@@ -940,12 +1001,17 @@ static void app_task(void *arg)
         case APP_EV_LINX_TTS:          on_linx_tts(&ev); break;
         case APP_EV_LINX_ABORT:
             s_tts_window_until = esp_timer_get_time();
+            if (s_wake_listen) {
+                s_wake_listen = false;
+                wake_word_enable(true);
+            }
             update_linx_gate();
             if (!in_intercom()) {
                 audio_rx_flush();
             }
             break;
         case APP_EV_MCP_CALL:          on_mcp_call(&ev); break;
+        case APP_EV_WAKE:           on_wake(); break;
         case APP_EV_NFC:
             if (ev.msg) start_join("nfc", ev.msg);
             break;
@@ -995,6 +1061,9 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_codec_init());
     audio_proc_init();
     ESP_ERROR_CHECK(cmd_input_init());
+    if (wake_word_init() != ESP_OK) {
+        ESP_LOGW(TAG, "wake word disabled (model/init failure)");
+    }
     rtc_peer_init();          /* DTLS cert pre-gen (slow, once) */
 #if CONFIG_INTERCOM_SPEAKER_ENABLE
     audio_dev_set_volume(nvs_store_get_volume());

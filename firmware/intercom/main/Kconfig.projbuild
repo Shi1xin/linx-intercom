@@ -84,4 +84,12 @@ menu "Intercom Configuration"
         bool "Enable speaker playback (set n for silent bench tests)"
         default y
 
+    config INTERCOM_WAKE_SELFTEST
+        bool "Inject a canned wake utterance into the detector 8 s after boot"
+        default n
+        help
+            Bench self-test: feeds a compiled-in 16 kHz 'ni hao xiao zhi'
+            sample through the normal feed/queue/detect path once per boot.
+            Verifies model load + pipeline without any acoustic source.
+
 endmenu

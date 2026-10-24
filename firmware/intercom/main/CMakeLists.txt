@@ -12,6 +12,7 @@ idf_component_register(
         "nvs_store.c"
         "linx_ota.c"
         "linx_client.c"
+        "wake_word.c"
     INCLUDE_DIRS
         "."
     PRIV_REQUIRES
