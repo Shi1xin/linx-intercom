@@ -10,6 +10,7 @@ idf_component_register(
         "cmd_input.c"
         "cmd_capture.c"
         "nvs_store.c"
+        "announce.c"
         "linx_ota.c"
         "linx_client.c"
         "wake_word.c"

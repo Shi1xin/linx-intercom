@@ -47,6 +47,40 @@ static volatile bool s_dec_reset_pending;   /* consumed by playback_task */
  * The playback task synthesizes them directly at the output rate, so tones
  * never touch the opus decoder and play regardless of the arbiter owner. */
 
+/* local announcement slots: producer (app task) arms a slot, the playback
+ * task streams its frames through the decoder ahead of queued packets.
+ * two slots let a newer state cue replace a queued one without clipping the
+ * one already on the speaker. */
+#define CLIP_SLOT_CAP 384
+static struct clip_slot {
+    volatile int state;          /* 0 free, 1 armed, 2 playing */
+    int idx, n;
+    opus_frame_t frames[CLIP_SLOT_CAP];
+} s_clip[2];
+
+bool audio_rx_play_frames(const opus_frame_t *frames, int nframes)
+{
+    if (frames == NULL || nframes <= 0 || nframes > CLIP_SLOT_CAP) {
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (s_clip[i].state == 0) {
+            memcpy(s_clip[i].frames, frames, nframes * sizeof(opus_frame_t));
+            s_clip[i].n = nframes;
+            s_clip[i].idx = 0;
+            __sync_synchronize();
+            s_clip[i].state = 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool audio_rx_frames_busy(void)
+{
+    return s_clip[0].state != 0 || s_clip[1].state != 0;
+}
+
 static i2s_chan_handle_t s_tx;
 static i2s_chan_handle_t s_rx;
 static portMUX_TYPE s_mic_stats_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -328,6 +362,13 @@ void audio_rx_flush(void)
     if (s_rx_queue) {
         xQueueReset(s_rx_queue);
     }
+    /* a state change (join/switch/leave/teardown) retires pending speech the
+     * same way it retires buffered audio — stale cues must not play late */
+    for (int i = 0; i < 2; i++) {
+        s_clip[i].state = 0;
+        s_clip[i].idx = 0;
+        s_clip[i].n = 0;
+    }
 }
 
 static void playback_write(const int16_t *pcm, int samples)
@@ -347,6 +388,42 @@ static void playback_task(void *arg)
     int16_t pcm48[4096];
     ESP_LOGI(TAG, "playback task up");
     for (;;) {
+        /* armed announcement clips stream first, frame by frame */
+        int clip = -1;
+        for (int i = 0; i < 2; i++) {
+            if (s_clip[i].state != 0) {
+                clip = i;
+                break;
+            }
+        }
+        if (clip >= 0) {
+            if (s_clip[clip].idx >= s_clip[clip].n) {
+                ESP_LOGI(TAG, "clip done frames=%d slot=%d", s_clip[clip].n, clip);
+                s_clip[clip].state = 0;
+                s_dec_reset_pending = true;   /* clean seam back to live audio */
+                continue;
+            }
+            s_clip[clip].state = 2;
+            if (s_clip[clip].idx == 0) {
+                s_dec_reset_pending = true;   /* seam in from live audio */
+            }
+            if (s_dec_reset_pending) {
+                s_dec_reset_pending = false;
+                audio_decoder_reset();
+            }
+            opus_frame_t *f = &s_clip[clip].frames[s_clip[clip].idx++];
+            int dec_samples = audio_opus_decode(f->data, f->len, pcm48,
+                                                sizeof(pcm48) / sizeof(pcm48[0]));
+            if (dec_samples <= 0) {
+                memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));
+                playback_write(s_pcm24, OUT_SAMPLES);
+                continue;
+            }
+            uint32_t out_samples = OUT_SAMPLES;
+            audio_downsample_48k_to_out(pcm48, dec_samples, s_pcm24, &out_samples);
+            playback_write(s_pcm24, out_samples);
+            continue;
+        }
         if (xQueueReceive(s_rx_queue, &pkt, pdMS_TO_TICKS(100)) != pdTRUE) {
             /* underflow: keep DMA fed with silence */
             memset(s_pcm24, 0, OUT_SAMPLES * sizeof(int16_t));

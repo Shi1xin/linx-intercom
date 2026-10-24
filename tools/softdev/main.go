@@ -35,6 +35,68 @@ func (d *softDevice) modeSnapshot() string {
 	return d.mode
 }
 
+type scriptStep struct {
+	Text    string `json:"text"`
+	DelayMs int    `json:"delay_ms"`
+}
+
+func loadScript(path string) []scriptStep {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("script: %v", err)
+	}
+	var steps []scriptStep
+	if err := json.Unmarshal(data, &steps); err != nil || len(steps) == 0 {
+		log.Fatalf("script parse: %v", err)
+	}
+	return steps
+}
+
+// runScript sends one detect text per round: the next prompt goes out after
+// the previous reply's tts stop (+delay_ms), or a 35 s no-reply timeout.
+func runScript(ctx context.Context, lx *linxConn, steps []scriptStep,
+	ready <-chan struct{}, tts <-chan string) {
+	for i, st := range steps {
+		if i == 0 {
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			// wait for the previous round's tts stop; bail at timeout
+			wait := time.NewTimer(35 * time.Second)
+			seen := false
+			for !seen {
+				select {
+				case s := <-tts:
+					if s == "stop" {
+						seen = true
+					}
+				case <-wait.C:
+					seen = true
+				case <-ctx.Done():
+					wait.Stop()
+					return
+				}
+			}
+			wait.Stop()
+		}
+		if st.DelayMs > 0 {
+			select {
+			case <-time.After(time.Duration(st.DelayMs) * time.Millisecond):
+			case <-ctx.Done():
+				return
+			}
+		}
+		lx.sendDetectText(st.Text)
+		log.Printf("sent detect prompt %d/%d: %s", i+1, len(steps), st.Text)
+	}
+}
+
 func stdinOps(d *softDevice) {
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
@@ -67,6 +129,7 @@ func main() {
 		turn     = flag.String("turn", "", "turn host:port for media fallback")
 		ogg      = flag.String("ogg", "", "opus ogg to stream while in room")
 		prompt   = flag.String("prompt", "", "listen.detect text to send after tools/list")
+		script   = flag.String("script", "", "json file [{\"text\":...,\"delay_ms\":N}] — one detect per round, paced on tts stop")
 		duration = flag.Duration("duration", 60*time.Second, "max session duration")
 		resume   = flag.Bool("resume", true, "auto rejoin resume_room after hello")
 		trace    = flag.String("trace", "", "write full trace json to this path")
@@ -148,6 +211,7 @@ func main() {
 		callDone := make(chan string, 8)
 		runDone := make(chan error, 1)
 		promptOnce := make(chan struct{}, 1)
+		ttsStop := make(chan string, 16)
 		go func() {
 			runDone <- lx.run(ctx,
 				func() {
@@ -156,8 +220,15 @@ func main() {
 					default:
 					}
 				},
-				func(name string) { callDone <- name })
+				func(name string) { callDone <- name },
+				func(state string) {
+					select {
+					case ttsStop <- state:
+					default:
+					}
+				})
 		}()
+		steps := loadScript(*script)
 		go func() {
 			if *noDevMCP {
 				// platform never runs tools/list without the mcp feature;
@@ -168,6 +239,10 @@ func main() {
 				case <-ctx.Done():
 					return
 				}
+			}
+			if len(steps) > 0 {
+				runScript(ctx, lx, steps, promptOnce, ttsStop)
+				return
 			}
 			select {
 			case <-promptOnce:

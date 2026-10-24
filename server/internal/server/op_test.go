@@ -185,6 +185,44 @@ func TestOpCorrelation(t *testing.T) {
 	}
 }
 
+func TestDeviceStateHTTP(t *testing.T) {
+	_, _, url := testServer(t)
+	c := newWS(t, url, "dev-watch")
+	m := c.joinRoom(t, JoinTarget{Kind: "nfc", EntryID: "tag-room-1"})
+	httpURL := strings.Replace(url, "ws", "http", 1)[:strings.LastIndex(strings.Replace(url, "ws", "http", 1), "/ws")]
+
+	resp, err := http.Get(httpURL + "/state?device_id=dev-watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Connected bool      `json:"connected"`
+		Mode      string    `json:"mode"`
+		Muted     bool      `json:"muted"`
+		Room      *RoomInfo `json:"room"`
+	}
+	json.NewDecoder(resp.Body).Decode(&body)
+	if !body.Connected || body.Mode != "intercom" || body.Room == nil ||
+		body.Room.Name != m.Room.Name || body.Muted {
+		t.Fatalf("state: %+v", body)
+	}
+
+	resp2, err := http.Get(httpURL + "/state?device_id=ghost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var off struct {
+		Connected bool   `json:"connected"`
+		Mode      string `json:"mode"`
+	}
+	json.NewDecoder(resp2.Body).Decode(&off)
+	if off.Connected || off.Mode != "offline" {
+		t.Fatalf("offline state: %+v", off)
+	}
+}
+
 func TestNormalizeOpResult(t *testing.T) {
 	m := &InMessage{OK: false, OKMsg: `{"ok":false,"error":"not_member","message":"未加入该房间"}`}
 	normalizeOpResult(m)

@@ -41,6 +41,17 @@ void audio_rx_play_tone(int freq_hz, int ms);
 void audio_decoder_reset(void);
 void audio_rx_mark_decoder_reset(void);
 
+/* Local spoken announcement: a caller-built sequence of raw 48 kHz Opus
+ * frames (announce_clips.h). The playback task streams them back-to-back
+ * ahead of the rx queue, so they play in every mode regardless of the
+ * linx/room source gate. Returns false when both clip slots are busy. */
+typedef struct {
+    const uint8_t *data;
+    uint16_t len;
+} opus_frame_t;
+bool audio_rx_play_frames(const opus_frame_t *frames, int nframes);
+bool audio_rx_frames_busy(void);
+
 /* Drop all queued downlink frames (used on room switch with need_media=false
  * and on peer teardown). */
 void audio_rx_flush(void);

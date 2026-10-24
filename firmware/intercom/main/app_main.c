@@ -34,6 +34,7 @@
 #include "cmd_input.h"
 #include "linx_ota.h"
 #include "linx_client.h"
+#include "announce.h"
 #include "wake_word.h"
 #include "wake_trace.h"
 
@@ -311,6 +312,19 @@ static bool mcp_op_is(const char *name)
     return s_mcp_op.active && strcmp(s_mcp_op.name, name) == 0;
 }
 
+/* the agent speaks the result in two cases: a device-side tool call on our
+ * linx session, or a cloud op that our own listen round just triggered
+ * (reply still owed). every other entry — cloud admin, another endpoint,
+ * NFC, summon, resume — gets the local announcer instead. */
+static bool agent_will_speak(void)
+{
+    if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
+        return true;
+    }
+    return s_linx_reply_pending || s_linx_playing ||
+           s_wake_listen || s_command_active;
+}
+
 /* ---------- linx bootstrap ---------- */
 
 static void linx_bootstrap(void)
@@ -545,7 +559,11 @@ static void on_join_result(app_event_t *ev)
 {
     if (!ev->flag) {
         ESP_LOGW(TAG, "join failed: %s", ev->msg ? ev->msg : "?");
-        play_tone(220, 250);   /* failure cue */
+        if (agent_will_speak()) {
+            play_tone(220, 250);   /* failure cue; agent TTS explains */
+        } else {
+            announce_op_failed();  /* cloud/NFC entry: user needs words */
+        }
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_err("join_failed", ev->msg);
@@ -612,7 +630,11 @@ static void on_confirm_result(app_event_t *ev)
          * repeated drop->rejoin cycles across Janus keepalive periods. It is
          * reset by user-initiated joins (start_join from nfc/mcp/op). */
         ESP_LOGI(TAG, "in room %s (%s) online=%d", s_room_name, s_room_code, s_online_count);
-        play_tone(880, 80); play_tone(1170, 120);   /* room-entry cue */
+        if (agent_will_speak()) {
+            play_tone(880, 80); play_tone(1170, 120);   /* room-entry cue */
+        } else {
+            announce_room_entry(s_room_name, s_room_code);
+        }
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
             mcp_op_finish_ok_room();
@@ -872,8 +894,13 @@ static void on_leave_result(app_event_t *ev)
     set_state(APP_STATE_IDLE);
     if (mcp_op_is("self.intercom.leave")) {
         if (ev->flag) {
+            bool speak = agent_will_speak();
             mcp_op_finish(true, "{\"ok\":true,\"left\":true,\"mode\":\"linx\"}");
-            play_tone(660, 150);                   /* room-exit cue */
+            if (speak) {
+                play_tone(660, 150);               /* room-exit cue */
+            } else {
+                announce_leave_done();
+            }
         } else {
             mcp_op_finish_err("leave_failed", "leave rejected");
         }
