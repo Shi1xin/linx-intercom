@@ -103,6 +103,10 @@ static esp_err_t i2s_rx_init(void)
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
+    /* Select the INMP441's left slot; the S3 Philips default enables both. */
+    std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    ESP_LOGI(TAG, "mic i2s rx rate=%d slot=left",
+             (int)std_cfg.clk_cfg.sample_rate_hz);
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx, &std_cfg));
     return i2s_channel_enable(s_rx);
 }

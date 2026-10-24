@@ -337,19 +337,28 @@ static void capture_task(void *arg)
     bool was_connected = false;
     ESP_LOGI(TAG, "capture task up");
     int dbg = 0;
+    uint32_t mic_samples = 0;
+    int32_t mic_peak = 0;
+    int64_t mic_log_start = esp_timer_get_time();
     for (;;) {
         int n = audio_dev_mic_read(pcm, MIC_FRAME_SAMPLES);
         if (n <= 0) {
             vTaskDelay(pdMS_TO_TICKS(MIC_FRAME_MS));
             continue;
         }
+        mic_samples += n;
+        for (int i = 0; i < n; i++) {
+            int32_t v = pcm[i] < 0 ? -(int32_t)pcm[i] : (int32_t)pcm[i];
+            if (v > mic_peak) mic_peak = v;
+        }
         if (++dbg % 200 == 0) {
-            int32_t peak = 0;
-            for (int i = 0; i < n; i++) {
-                int32_t v = pcm[i] < 0 ? -pcm[i] : pcm[i];
-                if (v > peak) peak = v;
-            }
-            ESP_LOGI(TAG, "mic peak=%d", (int)peak);
+            int64_t now = esp_timer_get_time();
+            ESP_LOGI(TAG, "mic peak=%d samples=%lu elapsed_us=%lld",
+                     (int)mic_peak, (unsigned long)mic_samples,
+                     (long long)(now - mic_log_start));
+            mic_samples = 0;
+            mic_peak = 0;
+            mic_log_start = now;
         }
         audio_proc_mic(pcm, n);
         vTaskDelay(1);   /* 1 ms block: when encode keeps the loop hot the idle
