@@ -75,7 +75,10 @@ function onMsg(m) {
       }
       break;
     case "room_info_result":
-      if (m.ok) log(`房间信息：${m.name}，在线 ${m.online_count}，邀请码 ${m.invite_digits}`, "state");
+      if (m.ok) {
+        log(`房间信息：${m.name}，在线 ${m.online_count}，邀请码 ${m.invite_digits}`, "state");
+        if (currentRoom) { currentRoom.online_count = m.online_count; updateRoomPanel(); }
+      }
       break;
     case "mute_result":
       if (m.ok) { muted = m.muted; updateRoomPanel(); lastAction(m.muted ? "已静音" : "已恢复通话"); }
@@ -85,7 +88,8 @@ function onMsg(m) {
       break;
     case "notify":
       if (m.event === "summon" && m.room) { log(`被召唤进入 ${m.room.name}`); doJoin({ kind: "invite", code: m.room.invite_code }); }
-      else if (m.event === "peer_joined" || m.event === "peer_left") updateRoomPanel();
+      else if (m.event === "peer_joined" || m.event === "peer_left")
+        send({ type: "room_info", request_id: req("i") });
       break;
     case "leave_result":
       currentRoom = null; muted = false; updateRoomPanel(); lastAction("已退出房间");
@@ -142,7 +146,12 @@ async function getAudio() {
 
 async function startMedia() {
   cleanup();
-  pc = new RTCPeerConnection({ iceServers: [] });
+  const turn = new URLSearchParams(location.search).get("turn");
+  const m = turn && turn.match(/^([^:]+):([^@]+)@(.+)$/);
+  const iceServers = m
+    ? [{ urls: [`turn:${m[3]}?transport=udp`], username: m[1], credential: m[2] }]
+    : [];
+  pc = new RTCPeerConnection({ iceServers });
   try {
     localStream = await getAudio();
   } catch (e) {

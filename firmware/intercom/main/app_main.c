@@ -111,6 +111,7 @@ static int64_t s_tts_started_us;          /* current round's tts start time */
 static TickType_t s_cmd_press_tick;
 static TickType_t s_last_tap_tick;
 static volatile bool s_linx_listen_sent;
+static bool s_cmd_offline;     /* press landed while the linx session was down */
 #define CMD_LISTEN_DELAY_MS 250
 
 const char *app_state_name(app_state_t s)
@@ -291,14 +292,24 @@ static void mcp_op_finish(bool ok, const char *result_json)
     }
 }
 
-static void mcp_op_finish_ok_room(void)
+static void mcp_op_finish_ok_room(bool with_code)
 {
     char js[256];
-    snprintf(js, sizeof(js),
-             "{\"ok\":true,\"mode\":\"%s\",\"room\":\"%s\",\"invite_code\":\"%s\","
-             "\"online_count\":%d,\"muted\":%s}",
-             in_intercom() ? "intercom" : "linx", s_room_name, s_room_code,
-             s_online_count, s_muted ? "true" : "false");
+    if (with_code) {
+        snprintf(js, sizeof(js),
+                 "{\"ok\":true,\"mode\":\"%s\",\"room\":\"%s\",\"invite_code\":\"%s\","
+                 "\"online_count\":%d,\"muted\":%s}",
+                 in_intercom() ? "intercom" : "linx", s_room_name, s_room_code,
+                 s_online_count, s_muted ? "true" : "false");
+    } else {
+        /* join/switch 成功结果不带邀请码：智能体回复只确认房名与在线数，
+         * 不复读用户刚念过的六位数字 */
+        snprintf(js, sizeof(js),
+                 "{\"ok\":true,\"mode\":\"%s\",\"room\":\"%s\","
+                 "\"online_count\":%d,\"muted\":%s}",
+                 in_intercom() ? "intercom" : "linx", s_room_name,
+                 s_online_count, s_muted ? "true" : "false");
+    }
     mcp_op_finish(true, js);
 }
 
@@ -509,9 +520,11 @@ static void capture_task(void *arg)
             was_connected = false;
             continue;   /* uplink only after confirm lands us in TALKING */
         }
-        if (s_muted) {
+        if (s_muted || s_linx_playing) {
             /* send a silence frame periodically so Janus keepalive never
-             * hangs up a muted-only leg (root cause of the rejoin churn) */
+             * hangs up a muted-only leg (root cause of the rejoin churn).
+             * s_linx_playing covers platform TTS playback: without it the
+             * speaker's reply leaks back through the mic to the whole room */
             t0 = esp_timer_get_time();
             int enc = audio_opus_encode(s_pcm_silence, MIC_FRAME_SAMPLES, pkt, 512);
             capture_trace_stage("encode", t0);
@@ -675,7 +688,7 @@ static void on_confirm_result(app_event_t *ev)
         }
         if (s_mcp_op.active &&
             (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
-            mcp_op_finish_ok_room();
+            mcp_op_finish_ok_room(false);
         }
     } else {
         ESP_LOGW(TAG, "confirm failed");
@@ -709,6 +722,7 @@ static void on_cmd_press(void)
     if (!s_command_active) {
         s_command_active = true;
         s_linx_listen_sent = false;
+        s_cmd_offline = !linx_client_is_connected();
         cmd_capture_begin();   /* keeps PCM stats for diagnostics */
     }
 }
@@ -744,6 +758,11 @@ static void on_cmd_release(void)
         return;
     }
     int samples = cmd_capture_finish();
+    if (s_cmd_offline) {
+        /* held to talk while the session was down: without a cue the
+         * speaker stays silent and the press looks ignored */
+        announce_offline();
+    }
     ESP_LOGI(TAG, "command audio sent to linx (%d samples)", samples);
 }
 
@@ -900,7 +919,7 @@ static void on_room_info_result(app_event_t *ev)
     }
     if (mcp_op_is("self.intercom.status")) {
         if (ev->flag) {
-            mcp_op_finish_ok_room();
+            mcp_op_finish_ok_room(true);
         } else {
             mcp_op_finish_err("not_in_room", "当前不在房间");
         }
@@ -990,8 +1009,14 @@ static void on_linx_tools_listed(void)
 
 static void on_wake(void)
 {
-    if (s_wake_listen || s_command_active || !linx_client_is_connected()) {
+    if (s_wake_listen || s_command_active) {
         wake_word_enable(true);
+        return;
+    }
+    if (!linx_client_is_connected()) {
+        ESP_LOGW(TAG, "wake with linx session down");
+        wake_word_enable(true);
+        announce_offline();
         return;
     }
     ESP_LOGI(TAG, "wake -> linx listen round");

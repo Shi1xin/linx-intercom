@@ -20,7 +20,7 @@
    "resume_room":{"id":3,"name":"三号房","invite_code":"314159"}|null}
 ```
 
-`token` 在设备首次 `hello` 时写入服务端记录，之后的 `hello` 必须携带同一 token；`auth_failed` 响应后服务端主动断开连接，终端重连再试。
+`token` 在设备首次 `hello` 时写入服务端记录，之后的 `hello` 必须携带同一 token；`auth_failed` 响应后服务端主动断开连接，终端重连后重试。
 
 ### 入房 / 切房（同一消息，服务端按当前状态执行 join 或 changeroom）
 
@@ -28,7 +28,7 @@
 → {"type":"join","request_id":"r2","target":<target>}
 ```
 
-`target` 四选一：
+`target` 为以下四种形式之一：
 
 ```json
 {"kind":"nfc","entry_id":"<标签UID>"}
@@ -102,7 +102,7 @@
 ```
 
 `summon`：设备标签组队时通知目标设备建房入房，目标设备按 `join` 流程建立媒体后 `confirm`。
-`media_lost`：Janus 侧挂起媒体（keepalive 超时等）时服务端清除该会话的媒体状态并下发；终端按恢复目标重新走 `join` 流程。
+`media_lost`：Janus 侧挂起媒体（keepalive 超时等）时服务端清除该会话的媒体状态并下发；终端按恢复目标重新执行 `join` 流程。
 
 ## 状态对应
 
@@ -117,7 +117,7 @@
 
 ## 服务端主动操作（云端 MCP / 管理面）
 
-云端 MCP 调用和 `/admin/op` 统一走 `op` 下投递，设备执行路径与本地入房完全一致，结果经 `op_result` 回报。
+云端 MCP 调用与 `/admin/op` 统一经 `op` 帧下投，设备执行路径与本地入房一致，结果经 `op_result` 回报。
 
 ```json
 ← {"type":"op","op_id":"op1","op":"join","op_arg":"468911"}
@@ -130,11 +130,11 @@
    "message":"{\"ok\":true,\"mode\":\"intercom\",\"room\":\"二号房\",\"invite_code\":\"468911\",\"online_count\":1,\"muted\":false}"}
 ```
 
-`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`、`nfc`（`op_arg`=标签 UID，免读卡器复现 NFC 入房路径）。设备侧对 join/switch/nfc 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
+`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`、`nfc`（`op_arg` 为标签 UID，用于在无物理读卡器时复现 NFC 入房路径）。设备侧对 join/switch/nfc 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
 
 云端入口：
 
-- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析；`-mcp-token` 非空时要求 `Authorization: Bearer <token>`
+- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五个工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析；`-mcp-token` 非空时要求 `Authorization: Bearer <token>`
 - `POST /admin/op`：`{"device_id","op","arg","muted"}` → 同步返回设备 `op_result`；受 `-admin-token` 保护
 - `tools/mcpbridge`：连出平台 `/v1/mcpproxy/connect?token=…`（官方反向通道），JSON-RPC 译为 `/admin/op`
 

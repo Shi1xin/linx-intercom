@@ -23,7 +23,7 @@ function makeEl() {
            appendChild() {}, scrollTop: 0, scrollHeight: 0 };
 }
 
-function loadClient(navOverride, fetchOverride) {
+function loadClient(navOverride, fetchOverride, search = "") {
   const els = new Map();
   const sent = [];
   const remoteStream = { id: "remote-1" };
@@ -42,7 +42,7 @@ function loadClient(navOverride, fetchOverride) {
     send(s) { sent.push(JSON.parse(s)); }
   }
   class RTCPeerConnection {
-    constructor() { pcInst = this; this.connectionState = "new"; }
+    constructor(cfg) { pcInst = this; this.cfg = cfg; this.connectionState = "new"; }
     addTrack() {}
     createOffer() { return Promise.resolve({ sdp: "offer-sdp" }); }
     setLocalDescription(d) { this.localDescription = d; return Promise.resolve(); }
@@ -52,7 +52,7 @@ function loadClient(navOverride, fetchOverride) {
   }
   const sandbox = {
     document, WebSocket, RTCPeerConnection,
-    location: { host: "test:8090", search: "" },
+    location: { host: "test:8090", search },
     URLSearchParams,
     navigator: navOverride ?? { mediaDevices: { getUserMedia: () => Promise.resolve(local) } },
     AudioContext: class {},
@@ -155,6 +155,35 @@ test("insecure context points the user at the localhost entry", async () => {
   c.deliver({ type: "join_result", ok: true, need_media: true });
   await tick(); await tick();
   assert.match(c.el("action").textContent, /localhost/);
+});
+
+test("peer_joined refreshes the online count via room_info", () => {
+  const c = loadClient();
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.deliver({ type: "confirm_result", ok: true,
+              room: { name: "一号房", invite_code: "723827", online_count: 1 } });
+  assert.match(c.el("room").textContent, /在线 1/);
+
+  c.deliver({ type: "notify", event: "peer_joined", device_id: "esp32" });
+  assert.equal(lastType(c.sent), "room_info");
+
+  c.deliver({ type: "room_info_result", ok: true, name: "一号房",
+              invite_code: "723827", invite_digits: "七二三八二七", online_count: 2 });
+  assert.match(c.el("room").textContent, /在线 2/);
+});
+
+test("?turn=user:pass@host:port builds a TURN iceServer for media", async () => {
+  const c = loadClient(undefined, undefined,
+    "?turn=intercom:night2026@10.234.79.213:3478");
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.deliver({ type: "join_result", ok: true, need_media: true });
+  await tick(); await tick();
+  const [srv] = c.pc().cfg.iceServers;
+  assert.equal(srv.urls[0], "turn:10.234.79.213:3478?transport=udp");
+  assert.equal(srv.username, "intercom");
+  assert.equal(srv.credential, "night2026");
 });
 
 test("state panel renders a room whose invite_code is admin-gated", async () => {
