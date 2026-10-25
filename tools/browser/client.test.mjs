@@ -23,7 +23,7 @@ function makeEl() {
            appendChild() {}, scrollTop: 0, scrollHeight: 0 };
 }
 
-function loadClient(navOverride) {
+function loadClient(navOverride, fetchOverride) {
   const els = new Map();
   const sent = [];
   const remoteStream = { id: "remote-1" };
@@ -56,7 +56,7 @@ function loadClient(navOverride) {
     URLSearchParams,
     navigator: navOverride ?? { mediaDevices: { getUserMedia: () => Promise.resolve(local) } },
     AudioContext: class {},
-    fetch: () => Promise.resolve({ json: () => Promise.resolve({ connected: false }) }),
+    fetch: fetchOverride ?? (() => Promise.resolve({ json: () => Promise.resolve({ connected: false }) })),
     setInterval: () => 1,
     clearInterval: () => {},
     Promise,
@@ -155,6 +155,21 @@ test("insecure context points the user at the localhost entry", async () => {
   c.deliver({ type: "join_result", ok: true, need_media: true });
   await tick(); await tick();
   assert.match(c.el("action").textContent, /localhost/);
+});
+
+test("state panel renders a room whose invite_code is admin-gated", async () => {
+  const gated = () => Promise.resolve({ json: () => Promise.resolve({
+    connected: true, mode: "intercom", muted: false,
+    room: { name: "一号房", online_count: 2 },  // no invite_code field
+  }) });
+  const c = loadClient(undefined, gated);
+  c.el("watchDev").value = "dev-s";
+  c.el("watchDev").onchange();
+  await tick(); await tick(); await tick();
+  const text = c.el("devState").textContent;
+  assert.match(text, /一号房/);
+  assert.match(text, /在线2/);
+  assert.doesNotMatch(text, /undefined/);
 });
 
 function lastType(sent) { return sent.at(-1).type; }

@@ -6,9 +6,9 @@
 
 ## 通用约定
 
-- `request_id`：发起方生成的单调字符串，服务端响应原样带回；终端只应用当前操作的响应
+- `request_id`：发起方生成的单调字符串，服务端响应原样带回；终端只应用当前操作的响应。带同一 `request_id` 重发 `join` 会命中服务端的去重缓存，返回首次结果
 - `device_id`：设备固定 MAC（小写冒号形式）；浏览器测试端使用 `browser-*` 身份
-- 错误响应统一为 `{"type":"error","request_id":"…","code":"…","message":"…"}`
+- 错误响应统一为 `{"type":"error","request_id":"…","error":{"code":"…","message":"…"}}`
 
 ## 消息
 
@@ -19,6 +19,8 @@
 ← {"type":"hello_result","request_id":"r1","ok":true,"muted":false,
    "resume_room":{"id":3,"name":"三号房","invite_code":"314159"}|null}
 ```
+
+`token` 在设备首次 `hello` 时写入服务端记录，之后的 `hello` 必须携带同一 token；`auth_failed` 响应后服务端主动断开连接，终端重连再试。
 
 ### 入房 / 切房（同一消息，服务端按当前状态执行 join 或 changeroom）
 
@@ -53,6 +55,8 @@
 → {"type":"ice","completed":true}
 ← {"type":"ice","candidate":{…}} / {"type":"ice","completed":true}
 ```
+
+`ice` 必须携带 `candidate` 或 `completed:true` 之一，两者皆空返回 `bad_request`。
 
 ### 媒体就绪确认
 
@@ -94,10 +98,11 @@
 ### 服务端主动通知
 
 ```json
-← {"type":"notify","event":"peer_joined|peer_left|summon","room":{…},"device_id":"…"}
+← {"type":"notify","event":"peer_joined|peer_left|summon|media_lost","room":{…},"device_id":"…"}
 ```
 
 `summon`：设备标签组队时通知目标设备建房入房，目标设备按 `join` 流程建立媒体后 `confirm`。
+`media_lost`：Janus 侧挂起媒体（keepalive 超时等）时服务端清除该会话的媒体状态并下发；终端按恢复目标重新走 `join` 流程。
 
 ## 状态对应
 
@@ -125,10 +130,17 @@
    "message":"{\"ok\":true,\"mode\":\"intercom\",\"room\":\"二号房\",\"invite_code\":\"468911\",\"online_count\":1,\"muted\":false}"}
 ```
 
-`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`。设备侧对 join/switch 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
+`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`、`nfc`（`op_arg`=标签 UID，免读卡器复现 NFC 入房路径）。设备侧对 join/switch/nfc 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
 
 云端入口：
 
-- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析
+- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析；`-mcp-token` 非空时要求 `Authorization: Bearer <token>`
 - `POST /admin/op`：`{"device_id","op","arg","muted"}` → 同步返回设备 `op_result`；受 `-admin-token` 保护
 - `tools/mcpbridge`：连出平台 `/v1/mcpproxy/connect?token=…`（官方反向通道），JSON-RPC 译为 `/admin/op`
+
+HTTP 只读端点：
+
+- `GET /healthz`：存活探针
+- `GET /state?device_id=<id>`：设备实时状态 `{"connected","mode","muted","room":{…}}`；`invite_code` 仅在请求携带 `-admin-token` 匹配的 `X-Admin-Token` 头时返回（未配置 admin token 的本地部署直接返回）
+- `GET /admin/rooms`：房间列表（含邀请码与在线数）；受 `-admin-token` 保护
+- `POST /admin/register-entry`：`{"entry_id","device_id"}` 登记设备标签绑定；受 `-admin-token` 保护

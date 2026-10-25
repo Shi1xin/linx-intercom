@@ -33,14 +33,14 @@ type mediaSession struct {
 	txPkts  atomic.Int64
 }
 
-func newMedia(dev *softDevice, turnAddr string) (*mediaSession, error) {
+func newMedia(dev *softDevice, turnAddr, turnUser, turnPass string) (*mediaSession, error) {
 	m := &mediaSession{dev: dev, done: make(chan struct{})}
 	cfg := webrtc.Configuration{}
 	if turnAddr != "" {
 		cfg.ICEServers = []webrtc.ICEServer{{
 			URLs:       []string{"turn:" + turnAddr + "?transport=udp"},
-			Username:   "intercom",
-			Credential: "night2026",
+			Username:   turnUser,
+			Credential: turnPass,
 		}}
 	}
 	pc, err := webrtc.NewPeerConnection(cfg)

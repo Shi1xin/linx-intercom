@@ -51,7 +51,7 @@
 
 QueueHandle_t g_app_queue;
 
-static app_state_t s_state = APP_STATE_IDLE;
+static volatile app_state_t s_state = APP_STATE_IDLE;  /* capture task reads it */
 static app_state_t s_state_before_cmd = APP_STATE_TALKING;
 static app_state_t s_state_before_join = APP_STATE_IDLE;
 static volatile bool s_muted;
@@ -135,6 +135,7 @@ bool app_post(app_ev_type_t type, char *msg, char *msg2, int arg0, bool flag)
     }
     app_event_t ev = { .type = type, .msg = msg, .msg2 = msg2, .arg0 = arg0, .flag = flag };
     if (xQueueSend(g_app_queue, &ev, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "app queue full, drop event %d", (int)type);
         free(msg);
         free(msg2);
         return false;
@@ -360,13 +361,37 @@ static void linx_bootstrap(void)
 
 /* ---------- uplink capture task ---------- */
 
-/* Log a warning when one capture stage blocks the loop over 40 ms */
+/* Log a warning when one capture stage blocks the loop over 40 ms.
+ * A "read" stall means the mic FIFO was empty: the capture task waits while
+ * the mic task refills, so the delay is scheduling noise (TLS/Wi-Fi bursts
+ * starve core 1 at boot) rather than lost audio — report it at most once
+ * per 5 s with the count and worst stall. Other stages keep per-event
+ * warnings: encode/send blocking stalls the whole capture loop. */
 static void capture_trace_stage(const char *stage, int64_t started_us)
 {
     int64_t elapsed = esp_timer_get_time() - started_us;
-    if (elapsed > 40000) {
-        ESP_LOGW(TAG, "capture stage=%s elapsed_us=%lld", stage, (long long)elapsed);
+    if (elapsed <= 40000) {
+        return;
     }
+    if (strcmp(stage, "read") == 0) {
+        static int64_t s_read_warn_us;
+        static unsigned s_read_stalls;
+        static int64_t s_read_max_us;
+        ++s_read_stalls;
+        if (elapsed > s_read_max_us) {
+            s_read_max_us = elapsed;
+        }
+        int64_t now = esp_timer_get_time();
+        if (now - s_read_warn_us >= 5000000) {
+            ESP_LOGW(TAG, "capture stage=read max_us=%lld stalls=%u",
+                     (long long)s_read_max_us, s_read_stalls);
+            s_read_warn_us = now;
+            s_read_stalls = 0;
+            s_read_max_us = 0;
+        }
+        return;
+    }
+    ESP_LOGW(TAG, "capture stage=%s elapsed_us=%lld", stage, (long long)elapsed);
 }
 
 static void capture_task(void *arg)
@@ -379,6 +404,7 @@ static void capture_task(void *arg)
     int dbg = 0;
     uint32_t mic_samples = 0;
     int32_t mic_peak = 0;
+    uint32_t mic_clipped = 0;
     int64_t mic_log_start = esp_timer_get_time();
     for (;;) {
         int64_t t0 = esp_timer_get_time();
@@ -392,11 +418,15 @@ static void capture_task(void *arg)
         for (int i = 0; i < n; i++) {
             int32_t v = pcm[i] < 0 ? -(int32_t)pcm[i] : (int32_t)pcm[i];
             if (v > mic_peak) mic_peak = v;
+            if (v >= INT16_MAX) ++mic_clipped;   /* saturated at the int16
+                                                  * gain stage (see
+                                                  * mic_read_i2s >>12) */
         }
         if (++dbg % 200 == 0) {
             int64_t now = esp_timer_get_time();
-            ESP_LOGI(TAG, "mic peak=%d samples=%lu elapsed_us=%lld",
-                     (int)mic_peak, (unsigned long)mic_samples,
+            ESP_LOGI(TAG, "mic peak=%d clip=%lu samples=%lu elapsed_us=%lld",
+                     (int)mic_peak, (unsigned long)mic_clipped,
+                     (unsigned long)mic_samples,
                      (long long)(now - mic_log_start));
             ESP_LOGI(TAG, "mic resources internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u stack_hwm=%u mic_overflows=%lu mic_dropped_samples=%lu mic_stack_hwm=%u",
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -409,6 +439,7 @@ static void capture_task(void *arg)
                      (unsigned)audio_dev_mic_stack_hwm());
             mic_samples = 0;
             mic_peak = 0;
+            mic_clipped = 0;
             mic_log_start = now;
         }
         audio_proc_mic(pcm, n);

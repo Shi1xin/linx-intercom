@@ -96,11 +96,6 @@ static esp_err_t linx_send_text_tmo(const char *text, int len,
     return ret;
 }
 
-static esp_err_t linx_send_text_n(const char *text, int len)
-{
-    return linx_send_text_tmo(text, len, portMAX_DELAY, pdMS_TO_TICKS(3000));
-}
-
 static esp_err_t linx_send_json_tmo(cJSON *root, TickType_t lock_wait,
                                     TickType_t send_tmo)
 {
@@ -442,6 +437,7 @@ esp_err_t linx_client_connect(const char *url, const char *token,
     char uri[176];
     if (strncmp(url, "ws://", 5) == 0) {
         snprintf(uri, sizeof(uri), "wss://%s", url + 5);
+        ESP_LOGW(TAG, "linx url rewritten ws:// -> wss:// (local ws debug unreachable)");
     } else {
         strlcpy(uri, url, sizeof(uri));
     }

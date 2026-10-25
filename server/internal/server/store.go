@@ -103,10 +103,13 @@ CREATE TABLE IF NOT EXISTS memberships(
 	return err
 }
 
+// UpsertDevice inserts the device row if missing. The token column is
+// written only at insert: once a device has a credential it cannot be
+// rotated by a later hello (auth happens in onHello before this call).
 func (s *Store) UpsertDevice(ctx context.Context, id, token string) (*Device, error) {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO devices(device_id,token) VALUES(?,?)
-		 ON CONFLICT(device_id) DO UPDATE SET token=excluded.token WHERE excluded.token<>''`, id, token)
+		 ON CONFLICT(device_id) DO NOTHING`, id, token)
 	if err != nil {
 		return nil, err
 	}
@@ -353,4 +356,23 @@ func (s *Store) Memberships(ctx context.Context, deviceID string) ([]Room, error
 
 func InviteDigits(code string) string {
 	return strings.Join(strings.Split(code, ""), " ")
+}
+
+// ListRooms returns every room in creation order (admin listing).
+func (s *Store) ListRooms(ctx context.Context) ([]Room, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, invite_code, janus_room FROM rooms ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Room
+	for rows.Next() {
+		var r Room
+		if err := rows.Scan(&r.ID, &r.Name, &r.InviteCode, &r.JanusRoom); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

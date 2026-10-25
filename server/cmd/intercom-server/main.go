@@ -73,6 +73,9 @@ func main() {
 	}, store, media)
 	if *mcpEnable {
 		srv.AttachMCP(*mcpTarget, *mcpToken)
+		if *mcpToken == "" {
+			log.Printf("WARNING: mcp enabled without -mcp-token: /mcp endpoints accept unauthenticated calls")
+		}
 		log.Printf("mcp adapter on /mcp (default target %q)", *mcpTarget)
 	}
 
