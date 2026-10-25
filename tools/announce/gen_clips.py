@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "firmware/intercom/main/announce_clips.h"
 ENV = ROOT / ".local/elevenlabs.env"
 
-VOICE_ID = "XrExE9yKIg1WjnnlVkGX"   # Matilda - Knowledgable, Professional
+VOICE_ID = "EXAVITQu4vr4xnSDxMaL"   # Sarah - Mature, Reassuring, Confident
 MODEL_ID = "eleven_multilingual_v2"
 VOICE_SETTINGS = {
     "stability": 0.6,
