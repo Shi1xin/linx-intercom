@@ -35,8 +35,10 @@ VOICE_SETTINGS = {
     "speed": 1.1,
 }
 
-# clip name -> spoken text. Digits 0-9 double as Chinese numerals for room
-# names ("二号房") and invite-code readout ("四六八九一一").
+# clip name -> spoken text. Room-entry sentences for "N号房" are rendered
+# whole — splicing "欢迎进入"+digit+"号房" sounded choppy. Standalone digits
+# are still generated for invite-code readout (digit-by-digit is the norm)
+# and as the fallback for multi-numeral room names.
 PHRASES = {
     "entered":  "欢迎进入",
     "room":     "房间",
@@ -45,6 +47,18 @@ PHRASES = {
     "left":     "已退出",
     "failed":   "操作失败",
     "offline":  "助手未连接",
+}
+
+# whole-sentence entry clips, keyed by spoken numeral index (一=1 … 十=10)
+ENTRY_ROOMS = {
+    "entry1": "欢迎进入一号房", "entry2": "欢迎进入二号房",
+    "entry3": "欢迎进入三号房", "entry4": "欢迎进入四号房",
+    "entry5": "欢迎进入五号房", "entry6": "欢迎进入六号房",
+    "entry7": "欢迎进入七号房", "entry8": "欢迎进入八号房",
+    "entry9": "欢迎进入九号房", "entry10": "欢迎进入十号房",
+}
+
+DIGITS = {
     "d0": "零", "d1": "一", "d2": "二", "d3": "三", "d4": "四",
     "d5": "五", "d6": "六", "d7": "七", "d8": "八", "d9": "九",
     "d10": "十",
@@ -167,7 +181,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         local = {"chime": chime, "gap": gap}
-        for name, src in {**local, **PHRASES}.items():
+        for name, src in {**local, **PHRASES, **ENTRY_ROOMS, **DIGITS}.items():
             ext = "wav" if name in local else "mp3"
             raw, ogg = td / f"{name}.{ext}", td / f"{name}.ogg"
             if name in local:
@@ -185,7 +199,7 @@ def main() -> None:
             else:
                 to_ogg(raw, ogg)
             section, nframes = emit(name, ogg_packets(ogg))
-            label = src if name in PHRASES else "(local)"
+            label = "(local)" if name in local else src
             sections.append(f"\n/* {label} */\n{section}")
             total += nframes
             print(f"{name:10} {label:8} {nframes:3} frames", file=sys.stderr)

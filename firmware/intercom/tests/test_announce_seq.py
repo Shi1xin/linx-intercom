@@ -53,13 +53,11 @@ int main(void) {
     /* every cue opens with the attention chime */
     announce_room_entry("二号房", "468911");
     if (!starts_with(clip_chime, CLIP_CHIME_FRAMES)) { puts("E0"); fails++; }
-    /* "二号房" -> 欢迎进入 + gap + 二 + 号房 */
-    if (!same(played + CLIP_CHIME_FRAMES, clip_entered, CLIP_ENTERED_FRAMES)) { puts("E1"); fails++; }
+    /* "二号房" -> whole-sentence clip_entry2, no splice */
+    int expect1 = CLIP_CHIME_FRAMES + CLIP_ENTRY2_FRAMES;
+    if (played_n != expect1) { printf("E1 n=%d want=%d\n", played_n, expect1); fails++; }
+    if (!ends_with(clip_entry2, CLIP_ENTRY2_FRAMES)) { puts("E2"); fails++; }
     int head = CLIP_CHIME_FRAMES + CLIP_ENTERED_FRAMES + CLIP_GAP_FRAMES;
-    if (!same(played + head, clip_d2, CLIP_D2_FRAMES)) { puts("E2"); fails++; }
-    if (!ends_with(clip_hao_fang, CLIP_HAO_FANG_FRAMES)) { puts("E3"); fails++; }
-    int expect = head + CLIP_D2_FRAMES + CLIP_HAO_FANG_FRAMES;
-    if (played_n != expect) { printf("E4 n=%d want=%d\n", played_n, expect); fails++; }
 
     /* "十一号房" -> 欢迎进入 + gap + 十 + 一 + 号房 */
     played_n = 0;
@@ -85,11 +83,12 @@ int main(void) {
     }
     if (played_n != off) { printf("E12 n=%d want=%d\n", played_n, off); fails++; }
 
-    /* ascii-digit room name "3号房" parses like 三号房 */
+    /* ascii-digit room name "3号房" -> whole-sentence clip_entry3 */
     played_n = 0;
     announce_room_entry("3号房", "286509");
-    if (!same(played + head, clip_d3, CLIP_D3_FRAMES)) { puts("E13"); fails++; }
-    if (!ends_with(clip_hao_fang, CLIP_HAO_FANG_FRAMES)) { puts("E14"); fails++; }
+    int expect3 = CLIP_CHIME_FRAMES + CLIP_ENTRY3_FRAMES;
+    if (played_n != expect3) { printf("E13 n=%d want=%d\n", played_n, expect3); fails++; }
+    if (!ends_with(clip_entry3, CLIP_ENTRY3_FRAMES)) { puts("E14"); fails++; }
 
     /* NULL name -> generic room + invite readout, no crash */
     played_n = 0;
