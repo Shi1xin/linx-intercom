@@ -28,14 +28,17 @@
 → {"type":"join","request_id":"r2","target":<target>}
 ```
 
-`target` 为以下四种形式之一：
+`target` 为以下五种形式之一：
 
 ```json
 {"kind":"nfc","entry_id":"<标签UID>"}
 {"kind":"device","device_id":"<目标设备MAC 或登记的标签UID>"}
 {"kind":"invite","code":"314159"}
 {"kind":"room_name","name":"三号房"}
+{"kind":"new"}
 ```
+
+`{"kind":"new"}` 让服务端新建一个房间并把本设备放进去；已在房内时等同切到新房。响应的 `room` 含新房名与邀请码。
 
 ```json
 ← {"type":"join_result","request_id":"r2","ok":true,"need_media":true,
@@ -130,11 +133,11 @@
    "message":"{\"ok\":true,\"mode\":\"intercom\",\"room\":\"二号房\",\"invite_code\":\"468911\",\"online_count\":1,\"muted\":false}"}
 ```
 
-`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`status`、`set_mute`（`mute`=布尔）、`leave`、`nfc`（`op_arg` 为标签 UID，用于在无物理读卡器时复现 NFC 入房路径）。设备侧对 join/switch/nfc 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
+`op` 字段取值 `join`（`op_arg`=邀请码）、`switch`（`op_arg`=房间名）、`create`（无 `op_arg`，新建房间并入房，`message` 内含 `invite_code` 与逐字中文数字 `invite_spoken`）、`status`、`set_mute`（`mute`=布尔）、`leave`、`nfc`（`op_arg` 为标签 UID，用于在无物理读卡器时复现 NFC 入房路径）。设备侧对 join/switch/create/nfc 按正常流程建立媒体并 `confirm`，`op_result` 在媒体确认后才发出；失败时 `ok:false`，`message` 内含 `error`/`message` 字段。`set_mute` 沿用持久化语义。
 
 云端入口：
 
-- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/status/set_mute/leave` 五个工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析；`-mcp-token` 非空时要求 `Authorization: Bearer <token>`
+- `GET /mcp`（SSE）+ `POST /mcp/message?sessionId=`：标准 MCP 端点，`intercom.join/switch/create/status/set_mute/leave` 六个工具；目标设备按 `arguments.device_id` → `X-Linx-Device-Id` 头 → `-mcp-target` 默认值的顺序解析；`-mcp-token` 非空时要求 `Authorization: Bearer <token>`
 - `POST /admin/op`：`{"device_id","op","arg","muted"}` → 同步返回设备 `op_result`；受 `-admin-token` 保护
 - `tools/mcpbridge`：连出平台 `/v1/mcpproxy/connect?token=…`（官方反向通道），JSON-RPC 译为 `/admin/op`
 

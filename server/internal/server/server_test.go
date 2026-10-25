@@ -371,3 +371,43 @@ func TestChangeRoomFailureRestores(t *testing.T) {
 }
 
 var errTest = &OutError{Code: "test", Message: "forced"}
+
+func TestJoinKindNew(t *testing.T) {
+	_, _, url := testServer(t)
+	c := newWS(t, url, "dev-new")
+
+	// two consecutive creates land in two different rooms
+	m1 := c.joinRoom(t, JoinTarget{Kind: "new"})
+	m2 := c.joinRoom(t, JoinTarget{Kind: "new"})
+	if m1.Room.ID == m2.Room.ID {
+		t.Fatalf("second create reused room: %+v", m2.Room)
+	}
+	if m1.Room.Name != "一号房" || m2.Room.Name != "二号房" {
+		t.Fatalf("names: %q %q", m1.Room.Name, m2.Room.Name)
+	}
+	if m1.Room.InviteCode == "" || m1.Room.InviteCode == m2.Room.InviteCode {
+		t.Fatalf("invite codes: %q %q", m1.Room.InviteCode, m2.Room.InviteCode)
+	}
+
+	// confirm recorded membership: switch back to 一号房 by name
+	m := c.joinRoom(t, JoinTarget{Kind: "room_name", Name: "一号房"})
+	if m.Room.Name != "一号房" {
+		t.Fatalf("switch back: %+v", m.Room)
+	}
+
+	// same request_id replayed creates exactly one room
+	c.send(InMessage{Type: "join", RequestID: "dup-new", Target: &JoinTarget{Kind: "new"}})
+	d1 := c.recvType("join_result")
+	c.send(InMessage{Type: "join", RequestID: "dup-new", Target: &JoinTarget{Kind: "new"}})
+	d2 := c.recvType("join_result")
+	if !d1.OK || !d2.OK || d1.Room.ID != d2.Room.ID {
+		t.Fatalf("replayed create diverged: %+v vs %+v", d1.Room, d2.Room)
+	}
+	c.send(InMessage{Type: "confirm", RequestID: "cd"})
+	c.recvType("confirm_result")
+
+	m4 := c.joinRoom(t, JoinTarget{Kind: "new"})
+	if m4.Room.Name != "四号房" {
+		t.Fatalf("dedup created an extra room: %+v", m4.Room)
+	}
+}

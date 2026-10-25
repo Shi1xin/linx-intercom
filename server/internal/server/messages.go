@@ -22,7 +22,7 @@ type InMessage struct {
 }
 
 type JoinTarget struct {
-	Kind     string `json:"kind"` // nfc | device | invite | room_name
+	Kind     string `json:"kind"` // nfc | device | invite | room_name | new
 	EntryID  string `json:"entry_id,omitempty"`
 	DeviceID string `json:"device_id,omitempty"`
 	Code     string `json:"code,omitempty"`
@@ -67,7 +67,7 @@ type OutMessage struct {
 	 * the same room-operation path as its local entries, then replies
 	 * op_result with the same op_id */
 	OpID   string `json:"op_id,omitempty"`
-	Op     string `json:"op,omitempty"`     // join | switch | status | set_mute | leave
+	Op     string `json:"op,omitempty"`     // join | switch | create | status | set_mute | leave
 	OpArg  string `json:"op_arg,omitempty"` // invite code | room name
 	OpMute *bool  `json:"mute,omitempty"`   // set_mute arg
 }

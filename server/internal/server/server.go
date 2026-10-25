@@ -527,6 +527,15 @@ func (s *ControlServer) resolveTarget(ctx context.Context, sess *Session, t *Joi
 			return nil, &OutError{Code: "media_failed", Message: err.Error()}
 		}
 		return room, nil
+	case "new":
+		room, err := s.store.CreateRoom(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.media.EnsureRoom(ctx, room.JanusRoom); err != nil {
+			return nil, &OutError{Code: "media_failed", Message: err.Error()}
+		}
+		return room, nil
 	case "device":
 		devID := t.DeviceID
 		if kind, _, bound, err := s.store.LookupEntry(ctx, devID); err == nil && kind == "device" && bound != "" {
