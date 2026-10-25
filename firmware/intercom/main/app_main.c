@@ -211,7 +211,8 @@ static void start_join_ex(const char *kind, const char *arg, bool auto_rejoin)
         }
         s_last_rejoin_us = now;
     }
-    if (arg == NULL || arg[0] == 0 || kind == NULL) {
+    if (kind == NULL ||
+        ((arg == NULL || arg[0] == 0) && strcmp(kind, "new") != 0)) {
         return;
     }
     s_state_before_join = s_state;
@@ -310,6 +311,32 @@ static void mcp_op_finish_ok_room(bool with_code)
                  in_intercom() ? "intercom" : "linx", s_room_name,
                  s_online_count, s_muted ? "true" : "false");
     }
+    mcp_op_finish(true, js);
+}
+
+/* create 成功结果带邀请码，并附 invite_spoken（中文数字逐字，0 读「零」），
+ * 让智能体直接把六位码念给用户转告队友 */
+static void mcp_op_finish_ok_create(void)
+{
+    static const char *k_digits[] = {
+        "零", "一", "二", "三", "四", "五", "六", "七", "八", "九",
+    };
+    char spoken[48];
+    size_t n = 0;
+    for (const char *p = s_room_code; *p; p++) {
+        const char *d = (*p >= '0' && *p <= '9') ? k_digits[*p - '0'] : NULL;
+        if (d == NULL || n + 4 > sizeof(spoken)) {
+            continue;
+        }
+        n += strlcpy(spoken + n, d, sizeof(spoken) - n);
+    }
+    spoken[n] = 0;
+    char js[384];
+    snprintf(js, sizeof(js),
+             "{\"ok\":true,\"mode\":\"%s\",\"room\":\"%s\",\"invite_code\":\"%s\","
+             "\"invite_spoken\":\"%s\",\"online_count\":%d,\"muted\":%s}",
+             in_intercom() ? "intercom" : "linx", s_room_name, s_room_code,
+             spoken, s_online_count, s_muted ? "true" : "false");
     mcp_op_finish(true, js);
 }
 
@@ -616,7 +643,8 @@ static void on_join_result(app_event_t *ev)
             announce_op_failed();  /* cloud/NFC entry: user needs words */
         }
         if (s_mcp_op.active &&
-            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
+            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch") ||
+             mcp_op_is("self.intercom.create"))) {
             mcp_op_finish_err("join_failed", ev->msg);
         }
         set_state(s_state_before_join);
@@ -648,7 +676,8 @@ static void on_peer_state(app_event_t *ev)
     } else if (st == ESP_PEER_STATE_CONNECT_FAILED) {
         ESP_LOGW(TAG, "media connect failed");
         if (s_mcp_op.active &&
-            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
+            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch") ||
+             mcp_op_is("self.intercom.create"))) {
             mcp_op_finish_err("media_failed", "webrtc connect failed");
         }
         if (s_state == APP_STATE_JOINING || s_state == APP_STATE_SWITCHING) {
@@ -686,9 +715,12 @@ static void on_confirm_result(app_event_t *ev)
         } else {
             announce_room_entry(s_room_name, s_room_code);
         }
-        if (s_mcp_op.active &&
-            (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch"))) {
-            mcp_op_finish_ok_room(false);
+        if (s_mcp_op.active) {
+            if (mcp_op_is("self.intercom.create")) {
+                mcp_op_finish_ok_create();
+            } else if (mcp_op_is("self.intercom.join") || mcp_op_is("self.intercom.switch")) {
+                mcp_op_finish_ok_room(false);
+            }
         }
     } else {
         ESP_LOGW(TAG, "confirm failed");
@@ -846,6 +878,12 @@ static void on_mcp_call(app_event_t *ev)
         }
         s_mcp_op.active = true;
         start_join("invite", c);
+        if (!s_mcp_op.active) { /* start_join may have rejected silently */
+            goto done;
+        }
+    } else if (strcmp(tool, "self.intercom.create") == 0) {
+        s_mcp_op.active = true;
+        start_join("new", NULL);
         if (!s_mcp_op.active) { /* start_join may have rejected silently */
             goto done;
         }

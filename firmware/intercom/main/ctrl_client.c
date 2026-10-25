@@ -84,6 +84,8 @@ esp_err_t ctrl_send_join(const char *kind, const char *arg)
         cJSON_AddStringToObject(target, "device_id", arg);
     } else if (strcmp(kind, "invite") == 0) {
         cJSON_AddStringToObject(target, "code", arg);
+    } else if (strcmp(kind, "new") == 0) {
+        /* 新建房间：target 只有 kind，无参数 */
     } else { /* room_name */
         cJSON_AddStringToObject(target, "name", arg);
     }
@@ -314,6 +316,8 @@ static void dispatch_message(cJSON *root)
             tool = "self.intercom.join"; akey = "invite_code";
         } else if (strcmp(op->valuestring, "switch") == 0) {
             tool = "self.intercom.switch"; akey = "room_name";
+        } else if (strcmp(op->valuestring, "create") == 0) {
+            tool = "self.intercom.create";
         } else if (strcmp(op->valuestring, "status") == 0) {
             tool = "self.intercom.status";
         } else if (strcmp(op->valuestring, "set_mute") == 0) {
