@@ -51,6 +51,11 @@ var deviceTools = []map[string]any{
 		}, "required": []string{"room_name"}},
 	},
 	{
+		"name":        "self.intercom.create",
+		"description": "新建一个同频对讲房间并让本设备进入。成功后把房间名和邀请码告诉用户，邀请码按 invite_spoken 字段逐位读出，方便用户转告队友。",
+		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+	},
+	{
 		"name":        "self.intercom.status",
 		"description": "查询本设备当前模式、房间、人数、邀请码与静音状态。",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},

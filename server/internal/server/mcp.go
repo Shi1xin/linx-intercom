@@ -57,6 +57,10 @@ var cloudTools = []map[string]any{
 			"room_name": map[string]any{"type": "string", "description": "房间名，如 三号房"},
 			"device_id": map[string]any{"type": "string"},
 		}, "required": []string{"room_name"}}},
+	{"name": "intercom.create", "description": "让目标同频设备新建一个对讲房间并进入，结果含房间名和六位邀请码",
+		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
+			"device_id": map[string]any{"type": "string", "description": "目标设备 id，缺省取调用方设备"},
+		}}},
 	{"name": "intercom.status", "description": "查询目标设备的对讲模式、房间与静音状态",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"device_id": map[string]any{"type": "string"},
@@ -263,6 +267,8 @@ func (a *MCPAdapter) callTool(req *struct {
 			return toolErr("room_name required")
 		}
 		op, arg = "switch", n
+	case "intercom.create":
+		op = "create"
 	case "intercom.status":
 		op = "status"
 	case "intercom.set_mute":

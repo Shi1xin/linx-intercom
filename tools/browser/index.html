@@ -12,6 +12,14 @@ button { cursor:pointer }
 .state { color:#7f7 }
 .err { color:#f77 }
 audio { width: 100% }
+#demoPanel { display:none }
+body.demo #demoPanel { display:block }
+body.demo .big { font-size:34px; margin:14px 0 }
+body.demo .ctl { font-size:13px }
+.meter-row { display:flex; align-items:center; gap:12px; font-size:22px; margin:10px 0 }
+.meter { width:420px; height:22px; background:#333; border:1px solid #555 }
+.bar { height:100%; width:0; background:#4f4 }
+#clipBtns button { font-size:20px; margin:4px }
 </style>
 </head>
 <body>
@@ -23,6 +31,7 @@ audio { width: 100% }
     <option value="nfc">NFC 标签</option>
     <option value="room_name">房间名</option>
     <option value="device">设备标签</option>
+    <option value="new">新建房间</option>
   </select>
   <input id="target" size="20" placeholder="值">
   <button id="btnJoin">入房/切房</button>
@@ -36,8 +45,17 @@ audio { width: 100% }
 </div>
 <div class="row">本端房间：<span id="room" class="state">—</span> · 最近动作：<span id="action" class="state">—</span></div>
 <div class="row">设备 <input id="watchDev" size="20" placeholder="设备 MAC（可用 ?dev= 带参）"> 状态：<span id="devState" class="state">—</span></div>
+<div id="demoPanel">
+  <div class="big" id="demoRoom">—</div>
+  <div class="big" id="demoDev">—</div>
+  <div class="meter-row">队友端收到的声音 <div class="meter"><div id="rxLevel" class="bar"></div></div></div>
+  <div class="meter-row">队友在说话 <div class="meter"><div id="txLevel" class="bar"></div></div></div>
+  <div class="row"><label><input type="checkbox" id="demoPlay"> 外放远端音频</label></div>
+  <div class="row"><input type="file" id="clipFiles" multiple accept=".m4a,.wav,.mp3,audio/*"></div>
+  <div id="clipBtns"></div>
+</div>
 <audio id="remote" autoplay></audio>
-<div id="log"></div>
+<details id="logWrap" open><summary>日志</summary><div id="log"></div></details>
 <script src="client.js"></script>
 </body>
 </html>

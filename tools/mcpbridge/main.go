@@ -27,6 +27,8 @@ var tools = []map[string]any{
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{
 			"room_name": map[string]any{"type": "string", "description": "房间名，如 三号房"},
 		}, "required": []string{"room_name"}}},
+	{"name": "intercom.create", "description": "让同频设备新建一个对讲房间并进入，结果含房间名和六位邀请码",
+		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 	{"name": "intercom.status", "description": "查询设备的对讲模式、房间与静音状态",
 		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 	{"name": "intercom.set_mute", "description": "设置对讲麦克风静音",
@@ -172,6 +174,8 @@ func callTool(server, target, adminTok, name string, args map[string]any) (strin
 			return "room_name required", true
 		}
 		op, arg = "switch", n
+	case "intercom.create":
+		op = "create"
 	case "intercom.status":
 		op = "status"
 	case "intercom.set_mute":

@@ -279,6 +279,127 @@ func TestAdminOpHTTP(t *testing.T) {
 	}
 }
 
+func TestAdminOpCreate(t *testing.T) {
+	_, _, url := testServer(t)
+	c := newWS(t, url, "dev-create")
+	httpURL := strings.Replace(url, "ws", "http", 1)[:strings.LastIndex(strings.Replace(url, "ws", "http", 1), "/ws")]
+
+	go func() {
+		m := c.recvOp(t)
+		if m.Op != "create" || m.OpArg != "" {
+			return
+		}
+		replyOp(t, c, m, true,
+			`{"ok":true,"mode":"intercom","room":"四号房","invite_code":"286509","online_count":1}`)
+	}()
+
+	resp, err := http.Post(httpURL+"/admin/op", "application/json",
+		strings.NewReader(`{"device_id":"dev-create","op":"create"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OK   bool      `json:"ok"`
+		Room *RoomInfo `json:"room"`
+	}
+	json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != 200 || !body.OK || body.Room == nil || body.Room.InviteCode != "286509" {
+		t.Fatalf("admin create: %v %+v", resp.StatusCode, body)
+	}
+}
+
+func TestMCPCreateTool(t *testing.T) {
+	store := newTestStore(t)
+	fm := NewFakeMedia()
+	srv := NewControlServer(Config{Addr: ":0"}, store, fm)
+	srv.AttachMCP("dev-mcpc", "")
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	wsURL := strings.Replace(ts.URL, "http", "ws", 1) + "/ws"
+	c := newWS(t, wsURL, "dev-mcpc")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/mcp", nil)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	sc := bufio.NewScanner(r.Body)
+	sidCh := make(chan string, 1)
+	evCh := make(chan map[string]any, 8)
+	go func() {
+		var event string
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.HasPrefix(line, "event: ") {
+				event = line[7:]
+			} else if strings.HasPrefix(line, "data: ") {
+				data := line[6:]
+				if event == "endpoint" {
+					sidCh <- strings.TrimPrefix(data, "/mcp/message?sessionId=")
+				} else if event == "message" {
+					var m map[string]any
+					if json.Unmarshal([]byte(data), &m) == nil {
+						evCh <- m
+					}
+				}
+			}
+		}
+	}()
+	var sid string
+	select {
+	case sid = <-sidCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no endpoint event")
+	}
+	post := func(body string) {
+		resp, err := http.Post(ts.URL+"/mcp/message?sessionId="+sid, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("post status %v", resp.StatusCode)
+		}
+	}
+
+	post(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	select {
+	case ev := <-evCh:
+		res, _ := ev["result"].(map[string]any)
+		tools, _ := res["tools"].([]any)
+		found := false
+		for _, tl := range tools {
+			if tl.(map[string]any)["name"] == "intercom.create" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("tools/list lacks intercom.create: %v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no tools/list response")
+	}
+
+	post(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"intercom.create","arguments":{}}}`)
+	m := c.recvOp(t)
+	if m.Op != "create" {
+		t.Fatalf("op: %+v", m)
+	}
+	replyOp(t, c, m, true,
+		`{"ok":true,"mode":"intercom","room":"一号房","invite_code":"723827","online_count":1}`)
+	select {
+	case ev := <-evCh:
+		res, _ := ev["result"].(map[string]any)
+		if res["isError"] == true {
+			t.Fatalf("create call failed: %v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no create response on SSE")
+	}
+}
+
 func TestHelloCannotRotateToken(t *testing.T) {
 	srv, _, url := testServer(t)
 	ctx := context.Background()

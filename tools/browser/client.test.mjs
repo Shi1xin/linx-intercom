@@ -19,6 +19,8 @@ const src = readFileSync(
 
 function makeEl() {
   return { value: "", textContent: "", checked: false, srcObject: null,
+           muted: false, open: true, files: [], style: {},
+           classList: { add() {}, remove() {} },
            onclick: null, onchange: null, play: () => Promise.resolve(),
            appendChild() {}, scrollTop: 0, scrollHeight: 0 };
 }
@@ -31,6 +33,7 @@ function loadClient(navOverride, fetchOverride, search = "") {
   let wsInst = null, pcInst = null;
 
   const document = {
+    body: makeEl(),
     getElementById: (id) => {
       if (!els.has(id)) els.set(id, makeEl());
       return els.get(id);
@@ -64,7 +67,7 @@ function loadClient(navOverride, fetchOverride, search = "") {
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox);
   return {
-    els, sent, remoteStream,
+    els, sent, remoteStream, sandbox,
     el: (id) => document.getElementById(id),
     ws: () => wsInst, pc: () => pcInst,
     deliver: (m) => wsInst.onmessage({ data: JSON.stringify(m) }),
@@ -199,6 +202,60 @@ test("state panel renders a room whose invite_code is admin-gated", async () => 
   assert.match(text, /一号房/);
   assert.match(text, /在线2/);
   assert.doesNotMatch(text, /undefined/);
+});
+
+test("demo mode keeps the mic closed and mutes the remote element", async () => {
+  let micCalled = false;
+  const ctxStub = {
+    createMediaStreamDestination: () => ({ stream: { id: "uplink", getTracks: () => [{ stop() {} }] }, connect() {} }),
+    createConstantSourceNode: () => ({ offset: {}, connect() {}, start() {} }),
+    createOscillator: () => ({ connect() {}, start() {} }),
+    createGain: () => ({ gain: {}, connect() {} }),
+    createAnalyser: () => ({ fftSize: 0, connect() {}, getByteTimeDomainData: (b) => b.fill(128) }),
+    createMediaStreamSource: () => ({ connect() {} }),
+    decodeAudioData: () => Promise.resolve({}),
+    createBufferSource: () => ({ connect() {}, start() {} }),
+  };
+  const c = loadClient(
+    { mediaDevices: { getUserMedia: () => { micCalled = true; return Promise.reject(new Error("no mic in demo")); } } },
+    undefined, "?demo=1&dev=dev-d");
+  c.sandbox.AudioContext = function () { return ctxStub; };
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.el("kind").value = "invite";
+  c.el("target").value = "723827";
+  c.el("btnJoin").onclick();
+  c.deliver({ type: "join_result", ok: true, need_media: true });
+  await tick(); await tick();
+  assert.equal(micCalled, false, "demo mode must not open the computer mic");
+  assert.equal(c.el("remote").muted, true, "remote stays muted to avoid feedback");
+  assert.equal(lastType(c.sent), "sdp", "uplink offer uses the silence track");
+
+  c.el("demoPlay").checked = true;
+  c.el("demoPlay").onchange();
+  assert.equal(c.el("remote").muted, false, "playback toggle restores audio");
+});
+
+test("rmsLevel reports 0 for digital silence and >0 for audio", () => {
+  const c = loadClient();
+  const rms = c.sandbox.rmsLevel;
+  const buf = new Uint8Array(256);
+  const silent = { getByteTimeDomainData: (b) => b.fill(128) };
+  assert.equal(rms(silent, buf), 0);
+  const loud = { getByteTimeDomainData: (b) => b.fill(255) };
+  assert.ok(rms(loud, buf) > 0.5);
+});
+
+test("kind new sends a bare {kind:new} target, ignoring the input box", () => {
+  const c = loadClient();
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.el("kind").value = "new";
+  c.el("target").value = "ignored-value";
+  c.el("btnJoin").onclick();
+  const join = c.sent.at(-1);
+  assert.equal(join.type, "join");
+  assert.deepEqual(join.target, { kind: "new" });
 });
 
 function lastType(sent) { return sent.at(-1).type; }
