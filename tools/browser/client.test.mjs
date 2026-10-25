@@ -209,6 +209,8 @@ test("demo mode keeps the mic closed and mutes the remote element", async () => 
   const ctxStub = {
     createMediaStreamDestination: () => ({ stream: { id: "uplink", getTracks: () => [{ stop() {} }] }, connect() {} }),
     createConstantSourceNode: () => ({ offset: {}, connect() {}, start() {} }),
+    createOscillator: () => ({ connect() {}, start() {} }),
+    createGain: () => ({ gain: {}, connect() {} }),
     createAnalyser: () => ({ fftSize: 0, connect() {}, getByteTimeDomainData: (b) => b.fill(128) }),
     createMediaStreamSource: () => ({ connect() {} }),
     decodeAudioData: () => Promise.resolve({}),

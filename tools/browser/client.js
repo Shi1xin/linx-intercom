@@ -25,9 +25,12 @@ function demoUplinkStream() {
   if (!uplinkCtx) {
     uplinkCtx = new AudioContext();
     uplinkDest = uplinkCtx.createMediaStreamDestination();
-    const silence = uplinkCtx.createConstantSourceNode();
-    silence.offset.value = 0;
-    silence.connect(uplinkDest);
+    /* 零增益振荡器当静音源：createConstantSourceNode 在老内核上可能缺席 */
+    const silence = uplinkCtx.createOscillator();
+    const zero = uplinkCtx.createGain();
+    zero.gain.value = 0;
+    silence.connect(zero);
+    zero.connect(uplinkDest);
     silence.start();
     uplinkAnalyser = uplinkCtx.createAnalyser();
     uplinkAnalyser.fftSize = 256;
