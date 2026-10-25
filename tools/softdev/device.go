@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,6 +105,8 @@ func (d *softDevice) handleOp(m ctrlMsg) {
 		case "switch":
 			tool = "self.intercom.switch"
 			args = map[string]any{"room_name": m.OpArg}
+		case "create":
+			tool = "self.intercom.create"
 		case "status":
 			tool = "self.intercom.status"
 		case "set_mute":
@@ -159,6 +162,14 @@ func (d *softDevice) execOp(tool string, args map[string]any) (map[string]any, e
 			return nil, fmt.Errorf("room_name required")
 		}
 		return d.opJoin(map[string]string{"kind": "room_name", "name": name})
+	case "self.intercom.create":
+		res, err := d.opJoin(map[string]string{"kind": "new"})
+		if err == nil {
+			if c, ok := res["invite_code"].(string); ok {
+				res["invite_spoken"] = inviteSpoken(c)
+			}
+		}
+		return res, err
 	case "self.intercom.status":
 		return d.opStatus()
 	case "self.intercom.set_mute":
@@ -223,6 +234,18 @@ func (d *softDevice) opJoin(target map[string]string) (map[string]any, error) {
 		"room": cf.Room.Name, "invite_code": cf.Room.InviteCode,
 		"online_count": cf.Room.OnlineCount,
 	}, nil
+}
+
+// inviteSpoken 把六位邀请码译成中文数字逐字串（0 读「零」），供智能体念给用户
+func inviteSpoken(code string) string {
+	digits := []string{"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"}
+	var b strings.Builder
+	for _, r := range code {
+		if r >= '0' && r <= '9' {
+			b.WriteString(digits[r-'0'])
+		}
+	}
+	return b.String()
 }
 
 func (d *softDevice) opStatus() (map[string]any, error) {
