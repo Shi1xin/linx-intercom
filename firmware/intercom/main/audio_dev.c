@@ -30,7 +30,7 @@
 #define MIC_TASK_STACK    4096
 #define MIC_TASK_PRIORITY 19  /* Preempt pc_task's DTLS work (priority 18). */
 #define MIC_TASK_CORE     ((portNUM_PROCESSORS > 1) ? 1 : 0)
-#define LINX_PRIME_FRAMES 25    /* ~500 ms runway after an underrun; lets the
+#define LINX_PRIME_FRAMES 40    /* ~800 ms runway after an underrun; lets the
                                * next sentence burst land before draining */
 
 typedef struct {
