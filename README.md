@@ -6,7 +6,7 @@
 
 ESP32-S3 group voice intercom on the Linx agent platform: speak a room name or invite code to join a persistent voice room; the device-side agent and the cloud drive the same room through one execution path.
 
-## 与语音助手的差别
+## 与消费级语音助手的定位差异
 
 | 能力 | 说明 |
 | --- | --- |
@@ -17,9 +17,9 @@ ESP32-S3 group voice intercom on the Linx agent platform: speak a room name or i
 | TTS 抖动缓冲 | 平台按句子突发下发音频（句间停顿可达秒级）；150 帧抖动缓冲 + 欠载后重新蓄势，长回复播放连续 |
 | 本地播报仲裁 | 云端/NFC 触发的房间变化由设备内置片段播报房间名；设备自己语音触发时让位给智能体 TTS，双通道重复播放由仲裁位消除 |
 
-## 架构
+## 系统架构
 
-设备固件同时持有两条 WebSocket：灵矽平台会话（ASR/LLM/TTS + 设备侧 MCP 工具 `self.intercom.*`）与同频控制会话（房间信令、操作投递）。群语音走设备与 Janus AudioBridge 的 WebRTC 通道，服务端混音。任一控制连接中断时另一条继续工作。
+设备固件同时持有两条 WebSocket：灵矽平台会话（ASR/LLM/TTS + 设备侧 MCP 工具 `self.intercom.*`）与同频控制会话（房间信令、操作投递）。群语音经设备与 Janus AudioBridge 的 WebRTC 通道传输，服务端混音。任一控制连接中断时另一条继续工作。
 
 ```mermaid
 flowchart LR
@@ -32,34 +32,34 @@ flowchart LR
     P -->|云端 intercom.*| C
 ```
 
-*NFC：标签绑定与入房执行链已通（服务端解析标签 → 建房/入房，固件走同一事件路径），当前由服务端 `op:nfc` 注入触发；物理读卡器在展望。
+*NFC：标签绑定与入房执行链已通（服务端解析标签 → 建房/入房，固件经同一事件路径），当前由服务端 `op:nfc` 注入触发；物理读卡器列入后续方向。
 
 完整架构与决策依据见 [产品设计](docs/product-design.md)，协议格式见 [控制协议](docs/control-protocol.md)，技术附录见 [产品架构](docs/architecture-design.md)。
 
-## 验证证据
+## 验证与测试
 
-真实平台 + 真实硬件记录（演示智能体 + 面包板 + 浏览器对端 + Janus）：
+以下结果均在真实平台与真实硬件（演示智能体、面包板、浏览器对端、Janus）上录得：
 
-- 8/8 轮真实智能体会话回复与设备实际状态一致，含无效邀请码的明确失败回复
+- 多轮真实智能体会话回复与设备实际状态一致，含无效邀请码的明确失败回复
 - `/admin/op` 直连下投：入房、状态、静音、切房、切回（静音保持）、退出，各次本地播报片段齐全
 - 云端接管经平台反向 MCP 通道：智能体调用 `intercom.*` 改变面包板房间状态
 - 平台会话半开断连复现修复：发送失败立即下线，5 秒重连恢复
-- TTS 长回复 500 帧整段播放：0 丢帧，欠载仅落在句间边界
-- 30 分钟单成员房内保持、正常关闭恢复、重复平台重连零采集丢样
+- 500 帧 TTS 长回复整段播放无丢帧，欠载仅出现在句间边界
+- 单成员房内 30 分钟保持、正常关闭恢复与重复平台重连均无采集丢样
 
-覆盖边界：`SELFTEST_TEXT` 自检与 `softdev` 脚本走文本注入，覆盖平台智能体、工具协议与 TTS；真机麦克风采集、唤醒词检测、物理按键与通话听感属人工验收项。
+覆盖边界：`SELFTEST_TEXT` 自检与 `softdev` 脚本经文本注入，覆盖平台智能体、工具协议与 TTS；真机麦克风采集、唤醒词检测、物理按键与通话听感属人工验收项。
 
 软件回归（与 CI 相同的三条命令，各自在子 shell 中执行）：
 
 ```bash
-(cd server && go test ./internal/server/...)          # 17 项：协议/状态机/MCP/token 认证
-node --test tools/browser/client.test.mjs            # 5/5：浏览器端协议与切房回归
-(cd firmware/intercom && python3 -m unittest discover tests)   # 38 项：固件逻辑桩 + 源码守卫检查
+(cd server && go test ./internal/server/...)          # 覆盖协议/状态机/MCP/token 认证
+node --test tools/browser/client.test.mjs            # 浏览器端协议与切房回归
+(cd firmware/intercom && python3 -m unittest discover tests)   # 固件逻辑桩 + 源码守卫检查
 ```
 
 无硬件时运行这三条即可验证协议、状态机与固件逻辑；浏览器页与 wsprobe 的媒体链路需要真实 Janus。
 
-## 运行
+## 构建与运行
 
 服务端（从仓库根启动，`/` 路径伺服浏览器端页面）：
 
@@ -74,7 +74,7 @@ cd server && go build -o bin/intercom-server ./cmd/intercom-server && cd ..
 
 使用者操作、开发者构建参数、注入测试路径与演示脚本见 [使用说明](docs/usage.md)。产品主页：[landing/](landing/index.html)。
 
-## 组件地图
+## 目录结构
 
 | 路径 | 内容 |
 | --- | --- |
@@ -89,6 +89,6 @@ cd server && go build -o bin/intercom-server ./cmd/intercom-server && cd ..
 | `infra/` | Janus 测试环境与部署配置 |
 | `docs/` | 产品设计、控制协议、使用说明、架构附录 |
 
-## 展望
+## 后续方向
 
-NFC 物理读卡器、AEC 回声消除、App 设备页、多板型与固件 OTA 发布；详见 [产品设计 · 展望](docs/product-design.md#展望)。
+NFC 物理读卡器、AEC 回声消除、App 设备页、多板型与固件 OTA 发布；详见 [产品设计 · 后续方向](docs/product-design.md#后续方向)。
