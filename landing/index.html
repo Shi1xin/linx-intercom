@@ -4,692 +4,250 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>灵矽同频 · 群语音对讲</title>
-<meta name="description" content="ESP32-S3 上的灵矽智能体就是房间入口：说出房间名或邀请码进入持久语音房间，设备与云端双通道控制同一间房。">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<meta name="description" content="给灵矽平台加上多人实时语音房间。直接开口，全房间都听见；按住说话，只有智能体听见。">
 <style>
 :root{
-  --bg:#18191b; --surface:#222427; --ink:#eff0f1; --muted:#9c9ea3;
-  --accent:#ff4a1f; --accent-ink:#18191b;
-  --field:#eff0f1; --field-ink:#18191b; --field-muted:#5c5f64;
-  --step-small:clamp(.8125rem,.79rem + .1vw,.875rem);
-  --step-body:clamp(1.0625rem,1rem + .25vw,1.1875rem);
-  --step-lead:clamp(1.25rem,1.1rem + .7vw,1.625rem);
-  --step-head:clamp(2rem,1.3rem + 3.2vw,4rem);
-  --r:4px; --mx:clamp(20px,4vw,56px);
+  --dark:#18191b; --surface:#222427; --line:#2e3134; --ink:#eff0f1; --muted:#9c9ea3;
+  --light:#eff0f1; --light-ink:#18191b; --light-muted:#5c5f64; --light-line:#d6d7d9; --light-card:#e4e5e7;
+  --accent:#ff4a1f;
+  --mx:clamp(20px,5vw,72px); --r:6px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{
-  font-family:'Work Sans',system-ui,-apple-system,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
-  background:var(--bg);color:var(--ink);font-size:var(--step-body);line-height:1.55;
-  -webkit-font-smoothing:antialiased;
-}
-::selection{background:var(--accent);color:var(--accent-ink)}
+body{font-family:system-ui,-apple-system,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  background:var(--dark);color:var(--ink);font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased}
 a{color:inherit}
-h1,h2,h3{font-weight:300;letter-spacing:-.035em;line-height:1.05}
-.mono, .ui{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
-.reveal{opacity:0;transform:translateY(18px);transition:opacity .6s ease,transform .6s ease}
-.reveal.on{opacity:1;transform:none}
-@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+code{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:.92em}
+h1,h2,h3{font-weight:400;letter-spacing:-.02em;line-height:1.15}
+section,header{padding:120px var(--mx)}
+.inner{max-width:1120px;margin:0 auto}
+.light{background:var(--light);color:var(--light-ink)}
+.light .muted{color:var(--light-muted)}
+.muted{color:var(--muted)}
+h2{font-size:clamp(28px,3vw,42px);margin-bottom:20px}
+.lede{font-size:clamp(17px,1.4vw,20px);max-width:44em;margin-bottom:48px}
+.note{max-width:44em;margin-top:40px}
 
-/* ---------- nav ---------- */
-.nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;
-  padding:18px var(--mx);font-size:var(--step-small)}
-.nav .mark{font-weight:500;font-size:17px;letter-spacing:.02em}
+/* nav */
+.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:28px;padding:16px var(--mx);
+  background:rgba(24,25,27,.92);backdrop-filter:blur(8px);font-size:15px}
+.nav .mark{font-weight:600;letter-spacing:.04em}
 .nav .sp{flex:1}
-.nav a.t{margin-left:28px;color:var(--muted);text-decoration:none}
-.nav a.t:hover{color:var(--ink)}
-.nav .cta{margin-left:32px;background:var(--accent);color:var(--accent-ink);
-  padding:8px 16px;border-radius:var(--r);font-weight:500;text-decoration:none}
-.nav .cta:hover{background:#ff6a45}
-.nav.on-light a.t{color:var(--field-muted)}
-.nav.on-light a.t:hover{color:var(--field-ink)}
-.nav.on-light .mark{color:var(--field-ink)}
-@media(max-width:640px){.nav a.t{display:none}}
+.nav a{text-decoration:none;color:var(--muted)}
+.nav a:hover{color:var(--ink)}
+.nav a.cta{background:var(--accent);color:var(--dark);padding:7px 16px;border-radius:var(--r);font-weight:600}
+@media(max-width:760px){.nav a.t{display:none}}
 
-/* ---------- hero ---------- */
-.hero{position:relative;height:280vh;background:var(--field);color:var(--field-ink)}
-.hero-stage{position:sticky;top:0;height:100vh;display:flex;align-items:center;overflow:hidden}
-.hero-line{margin:0;font-weight:inherit;position:absolute;inset:0;pointer-events:none;z-index:3}
-.hero-half{position:absolute;top:50%;transform:translateY(-50%);z-index:3;
-  font-size:clamp(30px,3.6vw,56px);font-weight:300;letter-spacing:-.035em;line-height:1.1;white-space:nowrap}
-@media(max-width:1020px){
-  .hero-half{background:var(--field);padding:4px 10px;border-radius:var(--r)}
-  .reel{width:60vw}
-}
-@media(max-width:820px){
-  .hero-sub{z-index:3;background:var(--field);padding:8px 12px;border-radius:var(--r)}
-  .flow .tag{display:none}
-  .how .steps .st{min-height:50svh}
-}
-.hero-half.l{left:var(--mx);text-align:left}
-.hero-half.r{right:var(--mx);text-align:right}
-.hero-half em{font-style:normal;color:var(--accent)}
-@media(max-width:1020px){
-  .hero-half.l{top:15%;transform:none}
-  .hero-half.r{top:calc(15% + 1.4em);left:var(--mx);right:auto;transform:none;text-align:left}
-}
-.reel{position:absolute;left:50%;top:0;transform:translateX(-50%);width:35vw;height:100vh;
-  display:flex;flex-direction:column;justify-content:flex-start;gap:24px;pointer-events:none}
-.reel .frame{width:100%;aspect-ratio:16/9;flex:none;border-radius:var(--r);overflow:hidden;
-  background:var(--surface);pointer-events:auto}
-.hero-sub{position:absolute;left:var(--mx);bottom:36px;max-width:34ch;
-  font-size:18px;line-height:1.5;color:var(--field-muted)}
-.hero-hint{position:absolute;right:var(--mx);bottom:36px;font-size:var(--step-small);color:var(--field-muted)}
-@media(max-width:820px){
-  .hero{height:240vh}
-  .hero-half{font-size:9vw}
-  .reel{width:calc(100vw - 32px)}
-  .reel .frame{aspect-ratio:4/3}
-  .hero-sub{left:16px;right:16px;bottom:26px;font-size:18px;max-width:60ch}
-  .hero-hint{display:none}
-}
+/* hero */
+.hero{padding-top:96px}
+.eyebrow{font-size:15px;letter-spacing:.08em;color:var(--light-muted);margin-bottom:20px}
+.hero h1{font-size:clamp(44px,7vw,96px);font-weight:300;letter-spacing:-.04em;margin-bottom:28px}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.hero .lede{margin-bottom:56px}
+.video{position:relative;aspect-ratio:16/9;background:var(--surface);border-radius:var(--r);overflow:hidden}
+.video::before{content:"演示视频";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:15px}
+.video video{position:relative;width:100%;height:100%;display:block;object-fit:cover}
 
-/* ---------- ui fragments ---------- */
-[data-ui]{font-size:13px;line-height:1.5;color:var(--ink);background:var(--surface)}
-[data-ui] .bar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #2e3134;color:var(--muted);font-size:13px}
-[data-ui] .dot{width:7px;height:7px;border-radius:50%;background:#3a3d40}
-[data-ui] .dot.on{background:var(--accent)}
-.trace{position:relative;padding:10px 12px;height:calc(100% - 33px);overflow:hidden}
-.trace .stream{height:calc(100% - 26px);overflow:hidden}
-.trace .lane{color:var(--muted);font-size:13px;margin:6px 0 2px}
-.msg{padding:3px 0;color:#c7c9cc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transform:translateY(4px)}
-.msg.show{opacity:1;transform:none;transition:opacity .25s,transform .25s}
-.msg .dir{color:var(--accent)}
-.msg.dim{color:#9c9ea3}
-.trace .foot{position:absolute;left:12px;bottom:8px;font-size:13px;color:var(--muted)}
-.replay{position:absolute;right:10px;bottom:7px;background:none;border:1px solid #3a3d40;color:var(--muted);
-  font:inherit;font-size:13px;padding:3px 10px;border-radius:var(--r);cursor:pointer}
-.replay:hover{color:var(--ink);border-color:var(--muted)}
+/* cards */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:960px){.grid3{grid-template-columns:1fr 1fr}}
+@media(max-width:680px){.grid2,.grid3{grid-template-columns:1fr}}
+.card{background:var(--surface);border-radius:var(--r);padding:28px}
+.light .card{background:var(--light-card)}
+.card h3{font-size:22px;margin-bottom:10px}
+.card .say{font-size:16px;margin-bottom:14px;color:var(--accent)}
+.light .card .say{color:#c8360f}
+.card p,.card li{font-size:16px}
+.card ul{list-style:none}
+.card li{padding:8px 0;border-top:1px solid var(--line)}
+.light .card li{border-top-color:var(--light-line)}
+.card .tag{display:inline-block;margin-top:14px;font-size:13px;padding:2px 10px;border-radius:99px;border:1px solid currentColor;opacity:.7}
+.card.hot{outline:1px solid var(--accent)}
 
-/* ---------- intro ---------- */
-.intro{background:var(--field);color:var(--field-ink);padding:0 0 120px}
-.intro .col{width:min(340px,78vw);margin-left:15vw;padding-top:8px}
-.intro p{font-size:16px;line-height:1.55;margin-bottom:1.1em}
-.intro p:first-child{font-weight:500}
-.intro p.rest{color:var(--field-muted)}
-@media(max-width:820px){.intro .col{margin-left:20px}}
+/* talk */
+.talk .card{padding:36px}
+.talk .card h3{font-size:clamp(24px,2.4vw,32px)}
 
-/* ---------- how (pinned) ---------- */
-.how{background:var(--bg);display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);column-gap:4vw;padding:0 var(--mx)}
-.how h2{font-size:clamp(24px,2vw,32px);font-weight:300;letter-spacing:-.03em;padding:14vh 0 0}
-.how .steps .st{min-height:80vh;display:flex;flex-direction:column;justify-content:center}
-.how .st b{font-weight:500;font-size:clamp(24px,2.2vw,32px);letter-spacing:-.02em;display:block;margin-bottom:.5em;color:var(--ink);transition:none}
-.how .st span{font-size:16px;color:var(--muted);max-width:38ch}
-.how .st{opacity:1}
-.how .st b{color:var(--muted)}
-.how .st.active b{color:var(--ink)}
-.how .stage{position:sticky;top:14vh;height:72vh;display:flex;align-items:center}
-.flow{width:100%;aspect-ratio:1/1;max-height:72vh;background:var(--surface);border-radius:var(--r);position:relative;padding:18px}
-.flow .node{position:absolute;background:#2b2e31;border-radius:var(--r);padding:8px 12px;font-size:13px;color:var(--muted);border:1px solid transparent;transition:border-color .4s,color .4s}
-.flow .node b{display:block;font-weight:500;color:inherit;font-size:13px}
-.flow .node.on{color:var(--ink);border-color:var(--accent)}
-.flow .wire{position:absolute;height:1px;background:#3a3d40;transform-origin:left center}
-.flow .wire.on{background:var(--accent);transition:background .4s}
-.flow .tag{position:absolute;font-size:13px;color:var(--muted);transition:color .4s}
-.flow .tag.on{color:var(--accent)}
-.flow .cap{position:absolute;left:18px;bottom:14px;font-size:13px;color:var(--muted)}
-@media(max-width:820px){
-  .how{display:block;padding:0 16px}
-  .how .stage{top:0;height:46svh;z-index:2;background:var(--bg)}
-  .flow{aspect-ratio:auto;height:40svh}
-  .how .steps .st{min-height:50svh;justify-content:flex-start;padding-top:8svh}
-  .how .st b{font-size:22px}
-}
+/* chain */
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:40px;font-size:16px}
+.chain span{background:var(--surface);border-radius:var(--r);padding:8px 14px}
+.chain span.hot{outline:1px solid var(--accent)}
+.chain i{font-style:normal;color:var(--muted)}
 
-/* ---------- features ---------- */
-.features{background:var(--bg);padding:120px var(--mx) 140px}
-.features h2{font-size:clamp(28px,2.8vw,40px);margin-bottom:56px}
-.fgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.cell{background:var(--surface);border-radius:var(--r);height:440px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
-.cell .txt{padding:24px 24px 0}
-.cell .txt b{display:block;font-weight:500;font-size:17px;margin-bottom:8px}
-.cell .txt span{font-size:16px;color:var(--muted);line-height:1.5;display:block}
-.cell .frag{overflow:hidden}
-.cell.ft .frag{align-self:stretch}
-.cell.rev{flex-direction:column-reverse}
-.cell.rev .txt{padding:0 24px 24px}
-.cell .frag [data-ui]{height:100%}
-@media(max-width:1020px){.fgrid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:680px){
-  .features{padding:80px 16px}
-  .fgrid{grid-template-columns:1fr;gap:6px}
-  .cell{height:auto;min-height:300px}
-}
-/* small fragment skins */
-.kv{padding:14px 16px}
-.kv .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #2e3134}
-.kv .row:last-child{border-bottom:0}
-.kv .k{color:var(--muted)} .kv .v{color:var(--ink)}
-.json{padding:14px 16px;color:#c7c9cc;white-space:pre;font-size:13px}
-.json .str{color:#8fd18a}.json .kw{color:#7fb4e8}
-.logs{padding:12px 14px;font-size:13px;line-height:1.7;color:#a9abaf;white-space:pre-wrap}
-.logs .w{color:#e8b93e}.logs .i{color:#7fb4e8}.logs .e{color:#e86a5e}
-.qbar{padding:16px}
-.qbar .q{display:flex;gap:3px;align-items:flex-end;height:64px}
-.qbar .q i{flex:1;background:#3a3d40;border-radius:2px 2px 0 0}
-.qbar .q i.f{background:var(--accent)}
-.qbar .lab{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:6px}
-.tl{padding:16px}
-.tl .lane2{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.tl .lane2 .n{width:56px;font-size:13px;color:var(--muted)}
-.tl .segs{flex:1;height:14px;background:#2b2e31;border-radius:2px;overflow:hidden;display:flex}
-.tl .segs i{display:block;height:100%}
-.tl .segs i.a{background:var(--accent)} .tl .segs i.b{background:#4a6f9e}
-.muterow{display:flex;align-items:center;gap:12px;padding:16px}
-.muterow .sw{width:44px;height:24px;border-radius:12px;background:var(--accent);position:relative}
-.muterow .sw::after{content:"";position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:#fff}
-.muterow .mt{font-size:13px}
-.muterow .mt small{display:block;color:var(--muted);font-size:13px}
+/* feedback */
+.points{display:grid;grid-template-columns:repeat(3,1fr);gap:40px}
+@media(max-width:860px){.points{grid-template-columns:1fr;gap:28px}}
+.points h3{font-size:22px;margin-bottom:10px}
+.points p{font-size:16px}
 
-/* ---------- showcase ---------- */
-.showcase{background:var(--field);color:var(--field-ink);padding:140px var(--mx)}
-.showcase h2{font-size:clamp(24px,2.2vw,32px);margin-bottom:96px;margin-left:25%}
-.sc{display:grid;grid-template-columns:repeat(12,1fr);margin-bottom:56px;align-items:start}
-.sc .lab{grid-column:1/4;text-align:right;font-size:22px;color:var(--field-muted);padding-top:10px}
-.sc .row{grid-column:4/10;max-width:640px}
-.sc .row .lab{display:none}
-.opmsg{background:var(--surface);color:var(--ink);border-radius:var(--r);padding:16px 18px;font-size:13px;position:relative}
-.opmsg .wh{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;margin-bottom:8px}
-.opmsg pre{font:inherit;white-space:pre-wrap;word-break:break-all;color:#c7c9cc}
-.opmsg .acts{position:absolute;right:12px;top:12px;display:none;gap:8px}
-.opmsg:hover .acts,.opmsg.live .acts{display:flex}
-.opmsg .acts button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:var(--r);
-  font:inherit;font-size:13px;padding:5px 14px;cursor:pointer;font-weight:500}
-.opmsg .acts button.ghost{background:none;border:1px solid #3a3d40;color:var(--muted)}
-.opmsg.done{border-left:3px solid var(--accent)}
-@media(max-width:820px){
-  .showcase{padding:80px 16px}
-  .showcase h2{margin-left:0;margin-bottom:48px;font-size:26px}
-  .sc{display:block;margin-bottom:48px}
-  .sc .row{max-width:none}
-  .sc > .lab{display:none}
-  .sc .row .lab{display:block;font-size:17px;color:var(--field-muted);margin-top:10px}
-}
+/* status */
+table{width:100%;border-collapse:collapse;font-size:16px}
+td{padding:14px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td:first-child{width:38%;padding-right:24px}
+td:last-child{color:var(--muted)}
+td .ok{color:var(--accent);margin-right:8px}
 
-/* ---------- proof ---------- */
-.proof{background:var(--bg);padding:120px var(--mx) 140px}
-.pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.tile{background:var(--surface);border-radius:var(--r);height:180px;padding:24px;display:flex;align-items:flex-start}
-.tile h2{font-size:clamp(22px,2.2vw,32px);font-weight:300;letter-spacing:-.03em}
-.tile.name b{font-weight:500;font-size:clamp(22px,1.9vw,30px)}
-.tile.name small{display:block;color:var(--muted);font-size:15px;margin-top:6px;font-weight:400}
-.tile.head{grid-column:span 2;background:var(--accent);color:var(--accent-ink)}
-.tile.wide{grid-column:span 2}
-.tile.wide small{max-width:38ch}
-@media(max-width:680px){
-  .proof{padding:80px 16px}
-  .pgrid{grid-template-columns:repeat(2,1fr);gap:6px}
-  .tile{height:auto;min-height:120px}
-  .tile.head{grid-column:span 2;min-height:110px}
-}
-
-/* ---------- specs ---------- */
-.specs{background:var(--bg);padding:64px var(--mx) 140px}
-.specs h2{font-size:clamp(28px,2.8vw,40px);margin-bottom:64px}
-.specs .cols{display:grid;grid-template-columns:repeat(12,1fr);column-gap:4vw}
-.specs .t{grid-column:1/7}
-.specs .t2{grid-column:8/13}
-.specs table{width:100%;border-collapse:collapse;font-size:15px}
-.specs td{padding:12px 0;border-bottom:1px solid #2e3134;vertical-align:top}
-.specs td:first-child{color:var(--muted);width:44%;padding-right:16px}
-.specs td:last-child{text-align:right}
-@media(max-width:820px){
-  .specs{padding:48px 16px 80px}
-  .specs .cols{display:block}
-  .specs .t{margin-bottom:32px}
-}
-
-/* ---------- footer ---------- */
-footer{padding:8px}
-.fg{display:grid;grid-template-columns:repeat(12,1fr);gap:8px}
-.ft{background:var(--surface);border-radius:var(--r);padding:20px}
-.ft.state{grid-column:1/5;height:200px;display:flex;flex-direction:column;justify-content:space-between}
-.ft.state .s1{font-size:22px;font-weight:300;letter-spacing:-.02em}
-.ft.state .s2{font-size:13px;color:var(--muted)}
-.ft.navl{grid-column:5/8;height:200px;font-size:16px}
-.ft.navl a{display:block;color:var(--muted);text-decoration:none;margin-bottom:8px}
-.ft.navl a:hover{color:var(--ink)}
-.ft.where{grid-column:8/10;height:200px;color:var(--muted);font-size:15px}
-.ft.mail{grid-column:10/13;height:200px;display:flex;align-items:flex-end;justify-content:flex-end}
-.ft.mail a{font-size:17px;color:var(--ink);text-decoration:underline;text-underline-offset:4px}
-.ft.big{grid-column:1/9;height:300px;background:var(--ink);color:var(--bg);display:flex;align-items:center;justify-content:center}
-.ft.big span{font-size:clamp(48px,9vw,140px);font-weight:300;letter-spacing:-.04em}
-.ft.go{grid-column:9/13;height:300px;background:var(--accent);color:var(--accent-ink);position:relative;text-decoration:none;display:block}
-.ft.go b{position:absolute;top:20px;left:20px;font-weight:500;font-size:26px;letter-spacing:-.02em}
-.ft.go svg{position:absolute;right:20px;bottom:20px;width:44px;height:44px}
-@media(max-width:820px){
-  .fg{grid-template-columns:repeat(2,1fr);gap:6px}
-  .ft.big,.ft.go{grid-column:span 2}
-  .ft.state{grid-column:span 2;height:140px}
-  .ft.navl,.ft.where,.ft.mail{grid-column:span 1;height:150px}
-  .ft.big{height:160px}
-  .ft.go{height:150px}
-}
+/* footer */
+footer{padding:64px var(--mx) 80px;border-top:1px solid var(--line)}
+footer .inner{display:flex;flex-wrap:wrap;gap:16px 40px;align-items:baseline}
+footer .mark{font-size:22px;font-weight:300;flex:1;min-width:200px}
+footer a{color:var(--muted);text-decoration:none}
+footer a:hover{color:var(--ink)}
 </style>
 </head>
 <body>
 
-<nav class="nav" id="nav">
+<nav class="nav">
   <span class="mark">灵矽同频</span>
   <span class="sp"></span>
-  <a class="t" href="#how">怎么工作</a>
-  <a class="t" href="#features">能力</a>
-  <a class="t" href="#proof">验证</a>
-  <a class="t" href="https://github.com/Shi1xin/linx-intercom">GitHub</a>
-  <a class="cta" href="#demo">看运行</a>
+  <a class="t" href="#talk">两路对话</a>
+  <a class="t" href="#rooms">建群</a>
+  <a class="t" href="#platform">接入灵矽</a>
+  <a class="t" href="#status">完成度</a>
+  <a class="cta" href="#demo">看演示</a>
 </nav>
 
-<!-- hero: split sentence + live protocol trace reel -->
-<header class="hero" id="top">
-  <div class="hero-stage">
-    <h1 class="hero-line"><span class="hero-half l">一句话入房，</span><span class="hero-half r">双端<em>同控</em>。</span></h1>
-    <div class="reel" id="reel">
-      <div class="frame">
-        <div data-ui style="height:100%">
-          <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
-            <span style="margin-left:6px">协议踪迹 · esp32s3-01</span></div>
-          <div class="trace" id="trace">
-            <div class="stream" id="traceStream"></div>
-            <div class="foot" id="traceFoot">流程演示 · 逐条重放</div>
-            <button class="replay" id="replay">重放</button>
-          </div>
-        </div>
-      </div>
-      <div class="frame">
-        <div data-ui class="kv" style="height:100%">
-          <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
-            <span style="margin-left:6px">/state · 设备面板</span></div>
-          <div class="row"><span class="k">device</span><span class="v">esp32s3-01</span></div>
-          <div class="row"><span class="k">mode</span><span class="v">intercom</span></div>
-          <div class="row"><span class="k">room</span><span class="v">三号房 · id 3</span></div>
-          <div class="row"><span class="k">invite</span><span class="v">3 1 4 1 5 9</span></div>
-          <div class="row"><span class="k">online</span><span class="v">2</span></div>
-          <div class="row"><span class="k">muted</span><span class="v">false</span></div>
-        </div>
-      </div>
-      <div class="frame">
-        <div data-ui class="logs" style="height:100%">
-          <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
-            <span style="margin-left:6px">serial · 日志示意</span></div>
-<span class="i">I</span> (32110) linx: session up
-<span class="i">I</span> (34102) linx: tts state=start
-<span class="i">I</span> (35590) linx: tts frame n=700
-<span class="i">I</span> (36120) linx: tts state=stop
-<span class="w">W</span> (37404) ctrl: ws disconnected
-<span class="i">I</span> (40454) ctrl: ws connected
-<span class="i">I</span> (40518) app: muted=1
-        </div>
-      </div>
-    </div>
-    <p class="hero-sub">ESP32-S3 上的灵矽智能体就是房间入口：说出房间名或邀请码进入持久语音房间，设备与云端两条通道控制同一间房。</p>
-    <p class="hero-hint">滚动查看三条界面片段 ↓</p>
+<header class="hero light" id="demo">
+  <div class="inner">
+    <p class="eyebrow">灵矽平台 · 多人实时语音房间</p>
+    <h1>一台设备，<br><em>两路</em>对话。</h1>
+    <p class="lede muted">给灵矽平台加上群语音能力。对设备说一句话就能新建房间、用邀请码加入、按名字切换；房间成员之间全双工通话；其他灵矽智能体也能把设备拉进房间。</p>
+    <div class="video"><video controls playsinline preload="metadata" src="demo.mp4"></video></div>
   </div>
 </header>
 
-<!-- intro: narrow column on empty field -->
-<section class="intro">
-  <div class="col">
-    <p>灵矽同频是一台对讲机形态的智能体。平时它是你熟悉的灵矽助手，说出房间名或邀请码，它就进入一间持久的语音房间，多端全双工。</p>
-    <p class="rest">房间是服务端的一等对象，跨设备共享。设备端按住说话能操作，云端智能体调用 MCP 工具也能操作——两条通道落到同一条房间执行链，结果一致。</p>
-    <p class="rest">工具结果在媒体真正确认后才返回：智能体播报的就是设备实际所在的房间名、邀请码与在线人数，失败则明说未完成及原因。</p>
-    <p class="rest">为司机的双手占用场景设计：全程不动手。同样适合车间、车队、户外这类「说一句就进频道」的场合。</p>
+<section class="talk" id="talk">
+  <div class="inner">
+    <h2>两路对话</h2>
+    <p class="lede muted">设备平时是灵矽助手。进入房间后，它同时承载对房间和对智能体两路对话，各走各的通道。</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>对房间说</h3>
+        <p class="say">直接开口</p>
+        <ul>
+          <li>房间全员实时听见，可以同时说话</li>
+          <li>双击 BOOT 静音，静音时继续收听</li>
+        </ul>
+      </div>
+      <div class="card hot">
+        <h3>对智能体说</h3>
+        <p class="say">按住 BOOT，或说「你好小智」</p>
+        <ul>
+          <li>房间上行暂停，房间声音继续播放</li>
+          <li>智能体的回复只在本机播放</li>
+        </ul>
+      </div>
+    </div>
+    <p class="note muted">开车时最频繁的动作是和队友说话，所以它零操作；对智能体的命令频率低，用明确的触发防止误操作。</p>
   </div>
 </section>
 
-<!-- how-it-works: pinned fragment, three states -->
-<section class="how" id="how">
-  <div class="steps">
-    <h2>怎么进房</h2>
-    <div class="st" data-step="0">
-      <b>说出来。</b>
-      <span>「加入三号房」或报出邀请码逐位数字；平台 ASR 识别后调用设备侧工具 self.intercom.join。</span>
-    </div>
-    <div class="st" data-step="1">
-      <b>执行链只有一个。</b>
-      <span>语音、云端 MCP、op 注入、断线恢复汇入同一个房间执行器与状态机，幂等语义一致。</span>
-    </div>
-    <div class="st" data-step="2">
-      <b>媒体确认才回报。</b>
-      <span>join 在 Janus 媒体确认后才回结果；智能体听到的工具回包就是设备的真实现状。</span>
-    </div>
-  </div>
-  <div class="stage">
-    <div class="flow" id="flow" data-ui>
-      <div class="node" id="n-mic" style="left:6%;top:44%"><b>设备</b>唤醒 · 按键</div>
-      <div class="node" id="n-linx" style="left:36%;top:14%"><b>灵矽平台</b>ASR·LLM·TTS·MCP</div>
-      <div class="node" id="n-ctrl" style="left:36%;top:70%"><b>控制服务</b>op 投递 · 状态机</div>
-      <div class="node" id="n-exec" style="left:66%;top:42%"><b>房间执行器</b>join·switch·leave</div>
-      <div class="node" id="n-room" style="right:2%;top:42%"><b>房间</b>Janus 混音</div>
-      <div class="wire" id="w1" style="left:19%;top:39%;width:18%;transform:rotate(-24deg)"></div>
-      <div class="wire" id="w2" style="left:19%;top:55%;width:18%;transform:rotate(22deg)"></div>
-      <div class="wire" id="w3" style="left:49%;top:30%;width:16%;transform:rotate(38deg)"></div>
-      <div class="wire" id="w4" style="left:49%;top:66%;width:16%;transform:rotate(-36deg)"></div>
-      <div class="wire" id="w5" style="left:79%;top:47%;width:9%"></div>
-      <div class="tag" id="t1" style="left:22%;top:26%">stt → tools/call</div>
-      <div class="tag" id="t2" style="left:21%;top:62%">op / join·sdp·ice</div>
-      <div class="tag" id="t3" style="left:52%;top:42%">tools/call → op_result</div>
-      <div class="tag" id="t4" style="left:52%;top:52%">同一执行器</div>
-      <div class="tag" id="t5" style="left:80%;top:52%">媒体确认后回报</div>
-      <div class="cap" id="flowCap"></div>
-    </div>
-  </div>
-</section>
-
-<!-- features: staggered fragment cells -->
-<section class="features" id="features">
-  <h2>设计要点</h2>
-  <div class="fgrid">
-    <div class="cell ft">
-      <div class="txt"><b>双端同控一个房间</b><span>设备端说一句话、云端智能体调一次工具、管理面 POST 一次 op，落进同一个状态机。</span></div>
-      <div class="frag" style="height:150px">
-        <div data-ui class="kv">
-          <div class="row"><span class="k">← op</span><span class="v">switch 二号房</span></div>
-          <div class="row"><span class="k">→ op_result</span><span class="v">ok · intercom:二号房</span></div>
-          <div class="row"><span class="k">muted</span><span class="v">保留 true</span></div>
-        </div>
+<section class="light" id="rooms">
+  <div class="inner">
+    <h2>建群与入房</h2>
+    <p class="lede muted">房间持久存在。系统按顺序起名「一号房」「二号房」，配六位数字邀请码，都能用语音说清楚。邀请码是首次进入的凭证，只告诉要拉进来的人；房间名只用于切回自己加入过的房间。</p>
+    <div class="grid3">
+      <div class="card hot">
+        <h3>语音新建</h3>
+        <p class="say">「新建一个对讲房间」</p>
+        <p>智能体念出房间名和邀请码，转告队友即可。</p>
       </div>
-    </div>
-    <div class="cell rev">
-      <div class="txt"><b>工具结果如实</b><span>MCP 工具回包在房间媒体确认后才发出，字段来自状态机本身；失败说清原因。</span></div>
-      <div class="frag" style="height:170px">
-        <div data-ui class="json">{
-  <span class="kw">"ok"</span>: true,
-  <span class="kw">"mode"</span>: <span class="str">"intercom"</span>,
-  <span class="kw">"room"</span>: <span class="str">"二号房"</span>,
-  <span class="kw">"invite_code"</span>: <span class="str">"314159"</span>,
-  <span class="kw">"online_count"</span>: 2,
-  <span class="kw">"muted"</span>: false
-}</div>
+      <div class="card">
+        <h3>邀请码加入</h3>
+        <p class="say">「加入对讲房间，邀请码七二三八二七」</p>
+        <p>首次进入别人的房间。</p>
       </div>
-    </div>
-    <div class="cell ft">
-      <div class="txt"><b>会话僵死自愈</b><span>半开 TCP 由发送失败判据立即下线，看门狗盯 TTS 回合；断连后自动重接。</span></div>
-      <div class="frag" style="height:150px">
-        <div data-ui class="logs"><span class="w">W</span>  ctrl: ws disconnected (clean=0)
-<span class="i">I</span>  websocket_client: Started
-<span class="i">I</span>  ctrl: ws connected
-<span class="i">I</span>  app: muted=1
-<span class="i">I</span>  linx: session up</div>
+      <div class="card">
+        <h3>按名切换</h3>
+        <p class="say">「切换到二号房」</p>
+        <p>回到加入过的房间，静音设置保留；切换失败时留在原房间。</p>
       </div>
-    </div>
-    <div class="cell ft">
-      <div class="txt"><b>TTS 深缓冲</b><span>平台按句突发下发，150 帧抖动队列吸收停顿；欠载后重新蓄势再继续。</span></div>
-      <div class="frag" style="height:150px">
-        <div data-ui class="qbar">
-          <div class="q">
-            <i class="f" style="height:90%"></i><i class="f" style="height:95%"></i><i class="f" style="height:88%"></i>
-            <i style="height:8%"></i><i style="height:6%"></i><i style="height:10%"></i>
-            <i class="f" style="height:92%"></i><i class="f" style="height:96%"></i><i class="f" style="height:90%"></i>
-            <i style="height:7%"></i><i style="height:9%"></i><i style="height:6%"></i>
-            <i class="f" style="height:91%"></i><i class="f" style="height:94%"></i><i class="f" style="height:89%"></i>
-            <i class="f" style="height:93%"></i><i class="f" style="height:90%"></i><i class="f" style="height:95%"></i>
-          </div>
-          <div class="lab"><span>句一 700 帧</span><span>句间突发边界</span><span>句二</span></div>
-        </div>
+      <div class="card">
+        <h3>云端调用</h3>
+        <p class="say">另一个灵矽智能体调用 <code>intercom.*</code></p>
+        <p>调度员远程把设备拉进房间、切房、退出，设备本地播报去了哪里。</p>
       </div>
-    </div>
-    <div class="cell rev">
-      <div class="txt"><b>静音随行</b><span>静音是持久用户设置：切房、断线恢复、重启后都按原样在 Janus 上恢复。</span></div>
-      <div class="frag" style="height:120px">
-        <div data-ui>
-          <div class="muterow"><span class="sw"></span><span class="mt">muted=true<small>切房 → 服务端恢复同一设置</small></span></div>
-          <div class="kv" style="padding-top:0">
-            <div class="row"><span class="k">mute_result</span><span class="v">ok · persisted</span></div>
-          </div>
-        </div>
+      <div class="card">
+        <h3>NFC 碰一碰</h3>
+        <p class="say">设备碰标签，或两台设备相碰</p>
+        <p>第一次碰标签建房，之后碰进同一房间；碰到正在通话的设备就加入对方。</p>
+        <span class="tag">执行链完成 · 读卡器待接</span>
       </div>
-    </div>
-    <div class="cell ft">
-      <div class="txt"><b>播报不重叠</b><span>云端触发由设备内置片段报房间名；自己语音触发让给智能体 TTS，仲裁位消重。</span></div>
-      <div class="frag" style="height:150px">
-        <div data-ui class="tl">
-          <div class="lane2"><span class="n">云端入房</span><span class="segs"><i class="a" style="width:38%"></i><i style="width:8%"></i><i class="b" style="width:54%"></i></span></div>
-          <div class="lane2"><span class="n">语音入房</span><span class="segs"><i class="b" style="width:92%"></i><i style="width:8%"></i></span></div>
-          <div class="lab" style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)">
-            <span style="color:var(--accent)">本地片段</span><span style="color:#4a6f9e">智能体 TTS</span>
-          </div>
-        </div>
+      <div class="card">
+        <h3>自动恢复</h3>
+        <p class="say">断线或断电重启</p>
+        <p>回到最后所在的房间；主动退出后保持待机。</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- showcase: one op, three states, middle is live -->
-<section class="showcase" id="demo">
-  <h2>一次云端接管</h2>
-  <div class="sc">
-    <div class="lab">下发</div>
-    <div class="row">
-      <div class="opmsg">
-        <div class="wh"><span>control → device</span><span>17:03:11.204</span></div>
-        <pre>{"type":"op","op_id":"op41","op":"join","op_arg":"314159"}</pre>
-      </div>
-      <div class="lab">下发</div>
+<section id="platform">
+  <div class="inner">
+    <h2>扩展灵矽，平台侧零改动</h2>
+    <p class="lede muted">智能体负责控制：听懂意图、调用房间工具、说出结果。房间服务负责媒体：群语音经 WebRTC 直连语音房间，在服务端混音，通话时长与平台调用成本无关。</p>
+    <div class="chain">
+      <span>用户说话</span><i>→</i><span>灵矽智能体</span><i>→</i><span class="hot">MCP 工具</span><i>→</i><span>房间执行器</span><i>→</i><span>语音房间</span>
     </div>
-  </div>
-  <div class="sc">
-    <div class="lab">执行</div>
-    <div class="row">
-      <div class="opmsg live" id="liveOp">
-        <div class="wh"><span>device · 房间内执行 · 演示</span><span>17:03:11.3xx</span></div>
-        <pre id="liveBody">{"type":"join","target":{"kind":"invite","code":"314159"}}</pre>
-        <div class="acts"><button id="runOp">演示执行</button><button class="ghost" disabled>详情</button></div>
+    <div class="grid3">
+      <div class="card">
+        <h3>设备侧 MCP</h3>
+        <p class="say"><code>self.intercom.*</code></p>
+        <p>设备绑定的智能体随会话发现这些工具，用户对设备说话即可操作房间。</p>
       </div>
-      <div class="lab">执行</div>
+      <div class="card">
+        <h3>云端 MCP</h3>
+        <p class="say"><code>intercom.*</code></p>
+        <p>任意灵矽智能体配置同频服务后，可以远程操作指定设备。</p>
+      </div>
+      <div class="card">
+        <h3>mcpproxy 反向通道</h3>
+        <p class="say">平台官方通道</p>
+        <p>同频服务主动连出并注册云端工具，部署时无需公网入口。</p>
+      </div>
     </div>
+    <p class="note muted">设备身份、OTA 激活、账号绑定和 ASR/LLM/TTS 沿用平台现有流程。两套工具落到设备上同一个房间执行器，新增一项房间能力只需加一条命令。</p>
   </div>
-  <div class="sc">
-    <div class="lab">回报</div>
-    <div class="row">
-      <div class="opmsg done">
-        <div class="wh"><span>device → control</span><span>17:03:15.881</span></div>
-        <pre>{"type":"op_result","op_id":"op41","ok":true,
- "message":"{\"ok\":true,\"mode\":\"intercom\",\"room\":\"三号房\",\"invite_code\":\"314159\",\"online_count\":2,\"muted\":false}"}</pre>
-      </div>
-      <div class="lab">回报</div>
+</section>
+
+<section class="light" id="feedback">
+  <div class="inner">
+    <h2>语音就是界面</h2>
+    <p class="lede muted">用户全程看不到屏幕，每一句反馈都必须和设备真实状态一致。</p>
+    <div class="points">
+      <div><h3>说出的就是实际状态</h3><p class="muted">工具结果在语音接通、服务端确认之后才返回。智能体报出的房间名和在线人数就是设备实际所在的房间，失败时说明原因。</p></div>
+      <div><h3>被远程移动时有播报</h3><p class="muted">云端调用或 NFC 改变了房间时，设备用本地提示音和播报说明结果；自己用语音触发时，让位给智能体的回答。</p></div>
+      <div><h3>设置跟着设备走</h3><p class="muted">静音和所在房间持久保存，切房、断线、重启后保持。</p></div>
     </div>
   </div>
 </section>
 
-<!-- proof: name tiles -->
-<section class="proof" id="proof">
-  <div class="pgrid">
-    <div class="tile head"><h2>跑在真实栈上</h2></div>
-    <div class="tile name"><div><b>ESP32-S3</b><small>面包板固件 · ESP-IDF 5.5</small></div></div>
-    <div class="tile name wide"><div><b>灵矽平台</b><small>ASR · LLM · TTS · 反向 MCP 工具桥：智能体看见的房间状态来自同一条执行链</small></div></div>
-    <div class="tile name"><div><b>Go 1.26</b><small>控制服务 · SQLite 持久化</small></div></div>
-    <div class="tile name"><div><b>Janus</b><small>AudioBridge 服务端混音</small></div></div>
-    <div class="tile name"><div><b>WebRTC · Opus</b><small>全双工 · TURN 中继</small></div></div>
-    <div class="tile name"><div><b>60 项测试</b><small>Go 17 · Node 5 · 固件 38</small></div></div>
-    <div class="tile name"><div><b>8/8 轮验收</b><small>真实智能体会话与状态一致</small></div></div>
-  </div>
-</section>
-
-<!-- specs -->
-<section class="specs">
-  <h2>参数</h2>
-  <div class="cols">
-    <div class="t">
-      <table>
-        <tr><td>麦克风 / 扬声器</td><td>16 kHz 采集 · 24 kHz 播放</td></tr>
-        <tr><td>媒体编码</td><td>Opus · RTP 48 kHz 时钟</td></tr>
-        <tr><td>TTS 抖动缓冲</td><td>150 帧（约 3.0 s）· 欠载重新蓄势</td></tr>
-        <tr><td>会话看门狗</td><td>首帧 25 s · 帧间 5 s</td></tr>
-        <tr><td>断线重连</td><td>控制通道约 3 s · 平台通道 ≤15 s</td></tr>
-      </table>
-    </div>
-    <div class="t2">
-      <table>
-        <tr><td>房间操作</td><td>join · switch · status · set_mute · leave · nfc(注入)</td></tr>
-        <tr><td>控制端点</td><td>/ws · /mcp(SSE) · /admin/op · /state</td></tr>
-        <tr><td>持久化</td><td>房间 · 成员 · 恢复目标 · 静音</td></tr>
-        <tr><td>恢复语义</td><td>断线重连自动回房 · 静音随房恢复</td></tr>
-        <tr><td>许可</td><td>MIT</td></tr>
-      </table>
-    </div>
+<section id="status">
+  <div class="inner">
+    <h2>完成度</h2>
+    <table>
+      <tr><td>语音新建、加入、切换、查询、静音、退出</td><td><span class="ok">●</span>真机与真实灵矽平台实测</td></tr>
+      <tr><td>云端智能体接管设备</td><td><span class="ok">●</span>真实灵矽平台经 mcpproxy 调用，真机执行</td></tr>
+      <tr><td>断线与重启自动回房</td><td><span class="ok">●</span>真机实测，单成员房间连续 30 分钟保持</td></tr>
+      <tr><td>NFC 两类标签</td><td>服务端与固件执行链完成，经注入验证；读卡器待接</td></tr>
+      <tr><td>第二台同频设备</td><td>由浏览器端代替，使用同一控制协议</td></tr>
+      <tr><td>回声消除</td><td>待接入；固件已预留播放参考</td></tr>
+    </table>
   </div>
 </section>
 
 <footer>
-  <div class="fg">
-    <div class="ft state">
-      <div class="s1">说一句话，<br>进入一个房间。</div>
-      <div class="s2">灵矽同频 · MIT License</div>
-    </div>
-    <div class="ft navl">
-      <a href="../docs/product-design.md">产品设计</a>
-      <a href="../docs/usage.md">使用说明</a>
-      <a href="../docs/control-protocol.md">控制协议</a>
-      <a href="../docs/architecture-design.md">架构附录</a>
-    </div>
-    <div class="ft where">杭州 · 黑客松<br><span id="clock"></span></div>
-    <div class="ft mail"><a href="https://github.com/Shi1xin/linx-intercom">github.com/Shi1xin/linx-intercom</a></div>
-    <div class="ft big"><span>灵矽同频</span></div>
-    <a class="ft go" href="https://github.com/Shi1xin/linx-intercom">
-      <b>看代码</b>
-      <svg viewBox="0 0 44 44" fill="none"><path d="M8 36 L36 8 M20 8 h16 v16" stroke="currentColor" stroke-width="4" stroke-linecap="square"/></svg>
-    </a>
+  <div class="inner">
+    <span class="mark">灵矽同频</span>
+    <a href="https://github.com/Shi1xin/linx-intercom/blob/main/docs/product-design.md">产品设计</a>
+    <a href="https://github.com/Shi1xin/linx-intercom/blob/main/docs/architecture-design.md">产品架构</a>
+    <a href="https://github.com/Shi1xin/linx-intercom/blob/main/docs/control-protocol.md">控制协议</a>
+    <a href="https://github.com/Shi1xin/linx-intercom/blob/main/docs/usage.md">使用说明</a>
+    <a href="https://github.com/Shi1xin/linx-intercom">GitHub</a>
+    <span class="muted">MIT License</span>
   </div>
 </footer>
 
-<script>
-// ---------- live trace replay (real session shape) ----------
-const STEPS = [
-  {lane:"灵矽通道 wss", msgs:[
-    ["→","listen.start：按住说出「加入三号房」","dim"],
-    ["←","stt：加入三号房",""],
-    ["⇄","tools/call self.intercom.join","dim"],
-  ]},
-  {lane:"同频控制 ws", msgs:[
-    ["→","join：按邀请码找房间","dim"],
-    ["←","join_result ok · 需要建立媒体",""],
-    ["⇄","sdp offer / answer",""],
-    ["→","confirm：媒体就绪","dim"],
-    ["←","confirm_result ok · 三号房",""],
-  ]},
-  {lane:"灵矽通道 wss", msgs:[
-    ["→","tools/call 结果：ok · 三号房","dim"],
-    ["←","tts：已进入三号房，当前两人在线",""],
-  ]},
-];
-let traceGen = 0;
-function playTrace(){
-  const gen = ++traceGen;              // 新一轮作废旧一轮的待触发定时器
-  const stream = document.getElementById('traceStream');
-  const foot = document.getElementById('traceFoot');
-  stream.innerHTML = '';
-  const rows = [];
-  STEPS.forEach(s=>{ rows.push({lane:s.lane}); s.msgs.forEach(m=>rows.push({msg:m})); });
-  let i = 0;
-  const tick = ()=>{
-    if(gen !== traceGen) return;       // 已被新一轮取代
-    if(i >= rows.length){ foot.textContent = "演示完成 · 点击重放"; return; }
-    const r = rows[i++];
-    const el = document.createElement('div');
-    if(r.lane){ el.className = 'lane'; el.textContent = r.lane; }
-    if(r.msg){
-      el.className = 'msg ' + r.msg[2];
-      el.innerHTML = '<span class="dir">' + r.msg[0] + '</span> ' + r.msg[1];
-    }
-    stream.appendChild(el);
-    el.classList.add('show');
-    setTimeout(tick, 420);
-  };
-  foot.textContent = "演示中…";
-  tick();
-}
-document.getElementById('replay').addEventListener('click', playTrace);
-window.addEventListener('load', ()=>setTimeout(playTrace, 600));
-
-// ---------- hero reel ----------
-const reel = document.getElementById('reel');
-const hero = document.querySelector('.hero');
-function reelUpdate(){
-  const r = hero.getBoundingClientRect();
-  const p = Math.min(1, Math.max(0, -r.top / (r.height - innerHeight)));
-  const frames = reel.children.length;
-  const fh = reel.children[0].getBoundingClientRect().height + 24;
-  const y = (innerHeight/2 - (fh-24)/2) - p*(frames-1)*fh;
-  reel.style.transform = 'translateX(-50%) translateY(' + Math.round(y) + 'px)';
-}
-addEventListener('scroll', reelUpdate, {passive:true});
-addEventListener('resize', reelUpdate);
-reelUpdate();
-
-// ---------- nav theme by section ----------
-const nav = document.getElementById('nav');
-const lightSecs = [...document.querySelectorAll('.hero,.intro,.showcase')];
-function navTheme(){
-  const y = innerHeight*0.12;
-  let light = false;
-  lightSecs.forEach(s=>{const r=s.getBoundingClientRect(); if(r.top<=y && r.bottom>y) light=true;});
-  nav.classList.toggle('on-light', light);
-}
-addEventListener('scroll', navTheme, {passive:true}); navTheme();
-
-// ---------- pinned flow states ----------
-const flowStates = [
-  {nodes:['n-mic','n-linx'], wires:['w1','w3'], tags:['t1'], cap:'语音入口：ASR → 工具调用'},
-  {nodes:['n-ctrl','n-exec'], wires:['w2','w4'], tags:['t2','t4'], cap:'所有入口 → 同一房间执行器'},
-  {nodes:['n-exec','n-room'], wires:['w5'], tags:['t5','t3'], cap:'媒体确认后回报 · 播报真实状态'},
-];
-const capEl = document.getElementById('flowCap');
-function flowSet(i){
-  const s = flowStates[i];
-  document.querySelectorAll('#flow .node').forEach(n=>n.classList.toggle('on', s.nodes.includes(n.id)));
-  document.querySelectorAll('#flow .wire').forEach(w=>w.classList.toggle('on', s.wires.includes(w.id)));
-  document.querySelectorAll('#flow .tag').forEach(t=>t.classList.toggle('on', s.tags.includes(t.id)));
-  capEl.textContent = s.cap;
-}
-flowSet(0);
-const sts = [...document.querySelectorAll('.how .st')];
-const io = new IntersectionObserver(es=>{
-  es.forEach(e=>{ if(e.isIntersecting){ sts.forEach(s=>s.classList.toggle('active', s===e.target)); flowSet(+e.target.dataset.step); }});
-},{rootMargin:'-45% 0px -45% 0px'});
-sts.forEach(s=>io.observe(s));
-
-// ---------- showcase live op ----------
-document.getElementById('runOp').addEventListener('click', function(){
-  const box = document.getElementById('liveOp');
-  const body = document.getElementById('liveBody');
-  this.disabled = true; this.textContent = '执行中';
-  const seq = [
-    '{"type":"join","target":{"kind":"invite","code":"314159"}}',
-    '{"type":"sdp","sdp":"v=0 o=- 8823… opus/48000/2"}',
-    '{"type":"confirm"}',
-    'join_result ok · need_media → sdp answer → confirm_result ok\n房间 三号房 · 在线 2 人',
-  ];
-  let i = 0;
-  const step = ()=>{
-    if(i<seq.length){
-      body.textContent = seq[i++];
-      setTimeout(step, 550);
-    } else {
-      box.classList.add('done');
-      this.textContent = '已完成';
-    }
-  };
-  step();
-});
-
-// ---------- entrances ----------
-const rio = new IntersectionObserver(es=>{
-  es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('on'); rio.unobserve(e.target); }});
-},{rootMargin:'0px 0px -12% 0px'});
-document.querySelectorAll('.cell,.tile,.sc,.intro .col p,.specs table,.ft').forEach(el=>{
-  el.classList.add('reveal'); rio.observe(el);
-});
-
-// ---------- clock ----------
-function tick(){
-  const d = new Date();
-  const el = document.getElementById('clock');
-  if(el) el.textContent = d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
-}
-tick(); setInterval(tick, 30000);
-</script>
 </body>
 </html>
