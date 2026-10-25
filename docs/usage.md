@@ -123,6 +123,33 @@ node --test tools/browser/client.test.mjs                  # 浏览器端协议�
 
 ## 演示脚本
 
+### 从空库复现：建房 → 取码 → 加入 → 按名切回
+
+空数据库没有任何房间与邀请码；首个房间由「加入一个不存在的 NFC 入口」触发——服务端原子建房并把该 `entry_id` 绑定到新房间。以下步骤在干净实例（新库 + 同一只 Janus）完整跑通。
+
+1. 起服务（浏览器/探针客户端的 hello 不带 token，省略 `-device-token`）：
+
+   ```bash
+   ./server/bin/intercom-server -addr :8090 -janus ws://<janus>:8188 \
+     -db /tmp/fresh-intercom.db -admin-token <secret>
+   ```
+
+2. 建第一间房并拿到邀请码，二选一：
+   - 浏览器：`http://localhost:8090/` → 服务填 `<host>:8090` → 连接 → 下拉选「NFC 标签」→ 值填 `tag-demo-1` → 「入房/切房」。页面显示 `一号房（邀请码 xxxxxx，在线 1）`。
+   - wsprobe：`wsprobe -url ws://<server>:8090/ws -id dev-1 -entry tag-demo-1 -listen 3s` → `JOINED room=一号房 code=XXXXXX`。
+
+3. 建第二间房：换一个新 `entry_id`（`tag-demo-2`）重复一次，得到 `二号房` 与第二个邀请码。
+
+4. 第二端加入：换身份（浏览器改「身份」框，或 wsprobe `-id dev-2`），`kind=invite` 填第一间房的邀请码入房。
+
+5. 首次加入另一房间并切回：第一端用第二间房的邀请码 join；此后该房间进入其「已加入」记录，可按名称切回——浏览器选「房间名」填 `一号房`，或 `wsprobe -invite <二号房码> -switch 一号房 -listen 3s`（一次运行完成 join + 按名切换）。
+
+6. 对照：`GET /admin/rooms`（带 `X-Admin-Token`）列出全部房间与邀请码。
+
+固件设备走同一协议：首次对设备说「加入对讲房间，邀请码 + 逐位数字」入房，之后对设备说「切换到 + 房间名」在已加入房间间切换。
+
+### 演示环境
+
 房间邀请码由服务端在建房时生成，随环境变化。获取当前房间与邀请码：
 
 ```bash

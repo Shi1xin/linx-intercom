@@ -293,7 +293,7 @@ footer{padding:8px}
             <span style="margin-left:6px">协议踪迹 · esp32s3-01</span></div>
           <div class="trace" id="trace">
             <div class="stream" id="traceStream"></div>
-            <div class="foot" id="traceFoot">真实协议消息 · 逐条重放</div>
+            <div class="foot" id="traceFoot">流程演示 · 逐条重放</div>
             <button class="replay" id="replay">重放</button>
           </div>
         </div>
@@ -313,7 +313,7 @@ footer{padding:8px}
       <div class="frame">
         <div data-ui class="logs" style="height:100%">
           <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
-            <span style="margin-left:6px">serial · 真实日志</span></div>
+            <span style="margin-left:6px">serial · 日志示意</span></div>
 <span class="i">I</span> (32110) linx: session up
 <span class="i">I</span> (34102) linx: tts state=start
 <span class="i">I</span> (35590) linx: tts frame n=700
@@ -325,7 +325,7 @@ footer{padding:8px}
       </div>
     </div>
     <p class="hero-sub">ESP32-S3 上的灵矽智能体就是房间入口：说出房间名或邀请码进入持久语音房间，设备与云端两条通道控制同一间房。</p>
-    <p class="hero-hint">滚动查看三条真实界面 ↓</p>
+    <p class="hero-hint">滚动查看三条界面片段 ↓</p>
   </div>
 </header>
 
@@ -333,7 +333,7 @@ footer{padding:8px}
 <section class="intro">
   <div class="col">
     <p>灵矽同频是一台对讲机形态的智能体。平时它是你熟悉的灵矽助手，说出房间名或邀请码，它就进入一间持久的语音房间，多端全双工。</p>
-    <p class="rest">房间是服务端的一等对象，不是某台设备的附属。设备端按住说话能操作，云端智能体调用 MCP 工具也能操作——两条通道落到同一条房间执行链，结果一致。</p>
+    <p class="rest">房间是服务端的一等对象，跨设备共享。设备端按住说话能操作，云端智能体调用 MCP 工具也能操作——两条通道落到同一条房间执行链，结果一致。</p>
     <p class="rest">工具结果在媒体真正确认后才返回：智能体播报的就是设备实际所在的房间名、邀请码与在线人数，失败则明说未完成及原因。</p>
     <p class="rest">为司机的双手占用场景设计：全程不动手。同样适合车间、车队、户外这类「说一句就进频道」的场合。</p>
   </div>
@@ -352,7 +352,7 @@ footer{padding:8px}
       <span>语音、云端 MCP、op 注入、断线恢复汇入同一个房间执行器与状态机，幂等语义一致。</span>
     </div>
     <div class="st" data-step="2">
-      <b>说完才算数。</b>
+      <b>媒体确认才回报。</b>
       <span>join 在 Janus 媒体确认后才回结果；智能体听到的工具回包就是设备的真实现状。</span>
     </div>
   </div>
@@ -380,7 +380,7 @@ footer{padding:8px}
 
 <!-- features: staggered fragment cells -->
 <section class="features" id="features">
-  <h2>它做对了什么</h2>
+  <h2>设计要点</h2>
   <div class="fgrid">
     <div class="cell ft">
       <div class="txt"><b>双端同控一个房间</b><span>设备端说一句话、云端智能体调一次工具、管理面 POST 一次 op，落进同一个状态机。</span></div>
@@ -474,9 +474,9 @@ footer{padding:8px}
     <div class="lab">执行</div>
     <div class="row">
       <div class="opmsg live" id="liveOp">
-        <div class="wh"><span>device · 房间内执行</span><span>17:03:11.3xx</span></div>
+        <div class="wh"><span>device · 房间内执行 · 演示</span><span>17:03:11.3xx</span></div>
         <pre id="liveBody">{"type":"join","target":{"kind":"invite","code":"314159"}}</pre>
-        <div class="acts"><button id="runOp">执行</button><button class="ghost" disabled>详情</button></div>
+        <div class="acts"><button id="runOp">演示执行</button><button class="ghost" disabled>详情</button></div>
       </div>
       <div class="lab">执行</div>
     </div>
@@ -559,24 +559,25 @@ footer{padding:8px}
 // ---------- live trace replay (real session shape) ----------
 const STEPS = [
   {lane:"灵矽通道 wss", msgs:[
-    ["→","listen.start","dim"],
-    ["→","stt: 加入三号房",""],
-    ["⇄","tools/call self.intercom.join {invite:314159}","dim"],
+    ["→","listen.start：按住说出「加入三号房」","dim"],
+    ["←","stt：加入三号房",""],
+    ["⇄","tools/call self.intercom.join","dim"],
   ]},
-  {lane:"控制通道 ws", msgs:[
-    ["←","op join 314159","dim"],
-    ["→","join {kind:invite}","dim"],
-    ["←","join_result ok need_media",""],
-    ["→","sdp offer → answer",""],
-    ["→","confirm","dim"],
+  {lane:"同频控制 ws", msgs:[
+    ["→","join：按邀请码找房间","dim"],
+    ["←","join_result ok · 需要建立媒体",""],
+    ["⇄","sdp offer / answer",""],
+    ["→","confirm：媒体就绪","dim"],
     ["←","confirm_result ok · 三号房",""],
   ]},
   {lane:"灵矽通道 wss", msgs:[
-    ["→","op_result ok · intercom:三号房","dim"],
-    ["←","tts: 已进入三号房，当前两人在线",""],
+    ["→","tools/call 结果：ok · 三号房","dim"],
+    ["←","tts：已进入三号房，当前两人在线",""],
   ]},
 ];
+let traceGen = 0;
 function playTrace(){
+  const gen = ++traceGen;              // 新一轮作废旧一轮的待触发定时器
   const stream = document.getElementById('traceStream');
   const foot = document.getElementById('traceFoot');
   stream.innerHTML = '';
@@ -584,7 +585,8 @@ function playTrace(){
   STEPS.forEach(s=>{ rows.push({lane:s.lane}); s.msgs.forEach(m=>rows.push({msg:m})); });
   let i = 0;
   const tick = ()=>{
-    if(i >= rows.length){ foot.textContent = "会话完成"; return; }
+    if(gen !== traceGen) return;       // 已被新一轮取代
+    if(i >= rows.length){ foot.textContent = "演示完成 · 点击重放"; return; }
     const r = rows[i++];
     const el = document.createElement('div');
     if(r.lane){ el.className = 'lane'; el.textContent = r.lane; }
@@ -596,7 +598,7 @@ function playTrace(){
     el.classList.add('show');
     setTimeout(tick, 420);
   };
-  foot.textContent = "replaying…";
+  foot.textContent = "演示中…";
   tick();
 }
 document.getElementById('replay').addEventListener('click', playTrace);

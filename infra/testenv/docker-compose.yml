@@ -13,4 +13,3 @@ services:
 
   # coturn 移至 docker-compose.turn.yml：默认不带 TURN 参数也能解析/启动 Janus；
   # 需要中继时叠加该文件，此时 TURN_PASS / PUBLIC_IP 为必填。
-
