@@ -239,7 +239,9 @@ func main() {
 				})
 		}()
 		steps := loadScript(*script)
+		scriptDone := make(chan struct{})
 		go func() {
+			defer close(scriptDone)
 			if *noDevMCP {
 				// platform never runs tools/list without the mcp feature;
 				// give the session a moment, then send the detect text
@@ -265,7 +267,8 @@ func main() {
 		}()
 
 		// exit 6s after the last completed tool call (allow agent TTS tail),
-		// otherwise at -duration
+		// otherwise at -duration; a script in flight keeps the session open
+		scriptOpen := len(steps) > 0
 		idle := time.NewTimer(time.Hour)
 		idle.Stop()
 	wait:
@@ -275,7 +278,19 @@ func main() {
 				calls = append(calls, name)
 				idle.Reset(6 * time.Second)
 			case <-idle.C:
-				break wait
+				if !scriptOpen {
+					break wait
+				}
+				select {
+				case <-scriptDone:
+					scriptOpen = false
+					idle.Reset(10 * time.Second)
+				default:
+					idle.Reset(time.Second)
+				}
+			case <-scriptDone:
+				scriptOpen = false
+				idle.Reset(10 * time.Second)
 			case err := <-runDone:
 				log.Printf("linx conn ended: %v", err)
 				break wait
