@@ -6,7 +6,7 @@
 #include "announce_clips.h"
 
 #define TAG "announce"
-#define SEQ_CAP 384          /* longest sequence: entry + room + invite + 6 digits */
+#define SEQ_CAP 448          /* chime + entry + room + invite + 6 digits + gaps */
 #define HAO_FANG "\xE5\x8F\xB7\xE6\x88\xBF"  /* 号房 */
 
 static opus_frame_t s_seq[SEQ_CAP];
@@ -102,24 +102,28 @@ static int append_invite(int n, const char *code)
         return n;
     }
     n = append_clip(n, clip_invite, CLIP_INVITE_FRAMES);
+    n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
     for (const char *p = code; *p; p++) {
         if (*p < '0' || *p > '9') {
             return n;
         }
         n = append_digit(n, *p - '0');
+        n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
     }
     return n;
 }
 
 void announce_room_entry(const char *room_name, const char *invite_code)
 {
-    int n = append_clip(0, clip_entered, CLIP_ENTERED_FRAMES);
+    int n = append_clip(0, clip_chime, CLIP_CHIME_FRAMES);
+    n = append_clip(n, clip_entered, CLIP_ENTERED_FRAMES);
+    n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
     int with_name = (room_name && room_name[0])
                     ? try_named_room(n, room_name) : -1;
     if (with_name > 0) {
         n = with_name;
     } else {
-        /* name not decomposable: "已进入房间" + invite digits as identity */
+        /* name not decomposable: "欢迎进入房间" + invite digits as identity */
         n = append_clip(n, clip_room, CLIP_ROOM_FRAMES);
         n = append_invite(n, invite_code);
     }
@@ -130,18 +134,30 @@ void announce_room_entry(const char *room_name, const char *invite_code)
     }
 }
 
+static void announce_two(const opus_frame_t *phrase, int frames,
+                         const char *what)
+{
+    int n = append_clip(0, clip_chime, CLIP_CHIME_FRAMES);
+    n = append_clip(n, phrase, frames);
+    if (!audio_rx_play_frames(s_seq, n)) {
+        ESP_LOGW(TAG, "announcer busy, %s cue dropped", what);
+    }
+}
+
 void announce_leave_done(void)
 {
     ESP_LOGI(TAG, "leave announce");
-    if (!audio_rx_play_frames(clip_left, CLIP_LEFT_FRAMES)) {
-        ESP_LOGW(TAG, "announcer busy, leave cue dropped");
-    }
+    announce_two(clip_left, CLIP_LEFT_FRAMES, "leave");
 }
 
 void announce_op_failed(void)
 {
     ESP_LOGI(TAG, "op failed announce");
-    if (!audio_rx_play_frames(clip_failed, CLIP_FAILED_FRAMES)) {
-        ESP_LOGW(TAG, "announcer busy, fail cue dropped");
-    }
+    announce_two(clip_failed, CLIP_FAILED_FRAMES, "fail");
+}
+
+void announce_offline(void)
+{
+    ESP_LOGI(TAG, "offline announce");
+    announce_two(clip_offline, CLIP_OFFLINE_FRAMES, "offline");
 }

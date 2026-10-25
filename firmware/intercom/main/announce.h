@@ -15,4 +15,7 @@ void announce_leave_done(void);
 /* "操作未完成" */
 void announce_op_failed(void);
 
+/* linx 会话不可用时替代静默:按键或唤醒尝试语音操作即播报 */
+void announce_offline(void);
+
 #endif /* ANNOUNCE_H */
