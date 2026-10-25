@@ -4,15 +4,15 @@
 
 给灵矽平台加上多人实时语音房间。对设备说一句话就能新建房间、用邀请码加入、按名字切换，房间成员之间全双工通话；其他灵矽智能体也能通过云端工具把设备拉进房间
 
-主页 https://lingxiwmp.qiniu.com/intercom/
+![演示视频](landing/demo.mp4)
 
-## 扩展灵矽的方式
+## 架构设计
 
 智能体负责控制，房间服务负责媒体。用户的命令经灵矽智能体变成工具调用，群语音经 WebRTC 直连语音房间并在服务端混音
 
 ```mermaid
 flowchart LR
-    U["用户"] -->|说话| D["同频设备"]
+    U["用户"] -->|说话| D["设备"]
     D <-->|命令与回复| P["灵矽智能体"]
     P -->|设备侧 MCP| D
     O["其他灵矽智能体"] -->|云端 MCP| S["同频房间服务"]
@@ -43,13 +43,15 @@ flowchart LR
 
 断线或断电重启后，设备自动回到最后所在的房间。另一个灵矽智能体调用云端工具把设备移到别的房间时，设备会本地播报去了哪里
 
-## 完成度
+## 实现状态
 
-- 语音新建、加入、切换、查询、静音、退出：真机与真实灵矽平台实测
-- 云端智能体接管：真实灵矽平台经 mcpproxy 调用，真机执行
-- 断线与重启自动回房：真机实测，单成员房间连续 30 分钟保持
-- NFC 碰一碰组队：服务端与固件执行链完成，经 `op:nfc` 注入验证，读卡器待接
-- 第二台同频设备由浏览器端代替；回声消除待接入
+真机与真实灵矽平台实测：
+
+- 语音新建、加入、切换、查询、静音、退出
+- 云端智能体接管：真实平台经 mcpproxy 调用，真机执行并本地播报
+- 断线与重启自动回房：单成员房间连续 30 分钟保持
+
+待完成：NFC 读卡器接入，服务端与固件执行链已通，经 `op:nfc` 注入验证
 
 设计思路见 [产品设计](docs/product-design.md)，实现细节见 [产品架构](docs/architecture-design.md) 与 [控制协议](docs/control-protocol.md)
 
@@ -61,6 +63,8 @@ cd server && go build -o bin/intercom-server ./cmd/intercom-server && cd ..
 ```
 
 浏览器端 `http://<server>:8090/?dev=<MAC>`。固件：`cd firmware/intercom && idf.py -p <port> build flash`。配置、部署与免硬件复现见 [使用说明](docs/usage.md)
+
+灵矽侧接入：设备侧 `self.intercom.*` 随会话 hello 的 `features.mcp` 声明自动开放，平台无需配置。云端 `intercom.*` 在灵矽控制台新建 SSE 类型 MCP（地址 `https://<灵矽平台>/v1/mcpproxy/mcp`，请求头 `X-MCP-Token: <token>`），再用同一 token 运行 `mcpbridge -endpoint 'wss://<灵矽平台>/v1/mcpproxy/connect?token=<token>' -server http://<server>:8090 -target <设备MAC> -admin-token <secret>` 连出注册，最后把该 MCP 挂到要接管设备的智能体上
 
 测试：
 
