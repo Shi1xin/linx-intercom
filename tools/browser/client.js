@@ -146,7 +146,12 @@ async function getAudio() {
 
 async function startMedia() {
   cleanup();
-  pc = new RTCPeerConnection({ iceServers: [] });
+  const turn = new URLSearchParams(location.search).get("turn");
+  const m = turn && turn.match(/^([^:]+):([^@]+)@(.+)$/);
+  const iceServers = m
+    ? [{ urls: [`turn:${m[3]}?transport=udp`], username: m[1], credential: m[2] }]
+    : [];
+  pc = new RTCPeerConnection({ iceServers });
   try {
     localStream = await getAudio();
   } catch (e) {
