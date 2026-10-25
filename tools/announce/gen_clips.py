@@ -25,14 +25,14 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "firmware/intercom/main/announce_clips.h"
 ENV = ROOT / ".local/elevenlabs.env"
 
-VOICE_ID = "EXAVITQu4vr4xnSDxMaL"   # Sarah - Mature, Reassuring, Confident
+VOICE_ID = "QAe8SYEl8U8qnxlfuLRz"   # Serena - Calm & Soothing (beijing mandarin)
 MODEL_ID = "eleven_multilingual_v2"
 VOICE_SETTINGS = {
-    "stability": 0.6,
+    "stability": 0.5,
     "similarity_boost": 0.75,
     "style": 0.0,
     "use_speaker_boost": True,
-    "speed": 1.15,
+    "speed": 1.1,
 }
 
 # clip name -> spoken text. Digits 0-9 double as Chinese numerals for room
