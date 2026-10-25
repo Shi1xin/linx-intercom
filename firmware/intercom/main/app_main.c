@@ -60,6 +60,20 @@ static volatile bool s_wake_listen;         /* wake word opened a linx listen ro
 static volatile bool s_linx_playing;        /* platform TTS is on the speaker */
 static bool s_linx_reply_pending;           /* a request we sent still owes a TTS reply */
 static TickType_t      s_wake_tick;         /* wake listen round opened at */
+/* continuous agent chat: a wake-opened round re-arms auto listen for a
+ * follow-up window after each reply, so "你好小智 + 追问" keeps working.
+ * s_follow_until_us == 0 while the first (wake) round is still open. */
+static bool     s_auto_chat;
+static int64_t  s_follow_until_us;
+/* an auto listen round that could not open because the socket is down — the
+ * platform closes idle sessions routinely and the reconnect may still be in
+ * flight. fired on APP_EV_LINX_HELLO; s_pending_detect = resend the wake
+ * detect text (first round), continuation rounds only send listen start. */
+static bool     s_listen_pending;
+static bool     s_pending_detect;
+static int64_t  s_pending_until_us;
+#define FOLLOWUP_WINDOW_MS 12000
+#define PENDING_WAKE_US    (10 * 1000 * 1000)
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_linx_reconnect_timer;
 static esp_timer_handle_t s_op_timer;
@@ -72,6 +86,13 @@ static int  s_online_count;
 /* linx bootstrap state */
 static bool s_linx_started;
 static char s_linx_client_id[48];
+/* ota result (ws url + device token) is stable across platform session
+ * cycles; refetching it on every reconnect adds ~1-2 s of dead window each
+ * time. refetched after repeated connect failures in case the token went
+ * stale. */
+static linx_ota_result_t s_ota;
+static bool s_ota_valid;
+static unsigned s_linx_reconnect_fails;
 
 /* auto-rejoin after media_lost: bounded retries so an empty room does not
  * thrash ICE every Janus keepalive cycle */
@@ -111,8 +132,17 @@ static int64_t s_tts_started_us;          /* current round's tts start time */
 static TickType_t s_cmd_press_tick;
 static TickType_t s_last_tap_tick;
 static volatile bool s_linx_listen_sent;
-static bool s_cmd_offline;     /* press landed while the linx session was down */
+static bool s_cmd_opened;      /* this hold opened a linx listen round */
 #define CMD_LISTEN_DELAY_MS 250
+/* a hold that ends while the linx socket is down keeps its PCM in the
+ * capture buffer; on the next session the buffered command is streamed as an
+ * auto round so a press inside a reconnect dead window still lands. */
+static bool          s_cmd_replay;
+static volatile bool s_replay_active;  /* capture task is streaming the buffer */
+static int           s_replay_pos;     /* samples replayed so far */
+static int64_t       s_replay_until_us;
+#define CMD_REPLAY_TAIL_FRAMES 30      /* ~600 ms silence closes the VAD turn */
+#define CMD_REPLAY_WINDOW_US  (25 * 1000 * 1000)
 
 const char *app_state_name(app_state_t s)
 {
@@ -379,22 +409,24 @@ static void linx_bootstrap(void)
                       CONFIG_INTERCOM_LINX_DEVICE_ID : wifi_sta_device_id();
     const char *cid = strlen(CONFIG_INTERCOM_LINX_CLIENT_ID) ?
                       CONFIG_INTERCOM_LINX_CLIENT_ID : s_linx_client_id;
-    linx_ota_result_t ota;
-    esp_err_t err = linx_ota_fetch(CONFIG_INTERCOM_LINX_OTA_URL, dev, cid,
-                                   CONFIG_INTERCOM_LINX_BOARD_TYPE, &ota);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "ota fetch failed, retry in %ds", LINXS_BOOT_RETRY_MS / 1000);
-        schedule_linx_reconnect(LINXS_BOOT_RETRY_MS);
-        return;
+    if (!s_ota_valid) {
+        esp_err_t err = linx_ota_fetch(CONFIG_INTERCOM_LINX_OTA_URL, dev, cid,
+                                       CONFIG_INTERCOM_LINX_BOARD_TYPE, &s_ota);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "ota fetch failed, retry in %ds", LINXS_BOOT_RETRY_MS / 1000);
+            schedule_linx_reconnect(LINXS_BOOT_RETRY_MS);
+            return;
+        }
+        if (!s_ota.bound) {
+            ESP_LOGW(TAG, "device unbound, activation code=%s (bind then retry)",
+                     s_ota.activation_code);
+            schedule_linx_reconnect(LINXS_BOOT_RETRY_MS);
+            return;
+        }
+        ESP_LOGI(TAG, "ota ok ws=%s", s_ota.ws_url);
+        s_ota_valid = true;
     }
-    if (!ota.bound) {
-        ESP_LOGW(TAG, "device unbound, activation code=%s (bind then retry)",
-                 ota.activation_code);
-        schedule_linx_reconnect(LINXS_BOOT_RETRY_MS);
-        return;
-    }
-    ESP_LOGI(TAG, "ota ok ws=%s", ota.ws_url);
-    linx_client_connect(ota.ws_url, ota.token, dev, cid);
+    linx_client_connect(s_ota.ws_url, s_ota.token, dev, cid);
 }
 
 /* ---------- uplink capture task ---------- */
@@ -486,17 +518,62 @@ static void capture_task(void *arg)
         /* wake detection runs whenever no listen round owns the mic; paused
          * while platform TTS is playing so the speaker cannot re-trigger it.
          * stays armed during linx outages so a flap does not kill the word */
-        if (!s_command_active && !s_wake_listen && !s_linx_playing) {
+        if (!s_command_active && !s_wake_listen && !s_linx_playing &&
+            !s_replay_active) {
             t0 = esp_timer_get_time();
             wake_word_feed(pcm, n);
             capture_trace_stage("wake", t0);
         }
+        if (s_replay_active) {
+            /* buffered command replay: the press happened while the socket
+             * was down. stream the capture buffer at mic cadence, then a
+             * silence tail so the platform VAD closes the turn. */
+            int total = cmd_capture_samples();
+            const int16_t *buf = cmd_capture_data();
+            int avail = (buf != NULL && s_replay_pos < total)
+                        ? total - s_replay_pos : 0;
+            int take = avail < MIC_FRAME_SAMPLES ? avail : MIC_FRAME_SAMPLES;
+            if (take > 0) {
+                memcpy(pcm, buf + s_replay_pos, take * sizeof(int16_t));
+            }
+            if (take < MIC_FRAME_SAMPLES) {
+                memset(pcm + take, 0,
+                       (MIC_FRAME_SAMPLES - take) * sizeof(int16_t));
+            }
+            s_replay_pos += MIC_FRAME_SAMPLES;
+            t0 = esp_timer_get_time();
+            int enc = audio_opus_encode(pcm, MIC_FRAME_SAMPLES, pkt, 512);
+            capture_trace_stage("encode", t0);
+            if (enc > 0) {
+                t0 = esp_timer_get_time();
+                linx_send_audio(pkt, enc);
+                capture_trace_stage("linx_audio", t0);
+            }
+            if (s_replay_pos >=
+                total + CMD_REPLAY_TAIL_FRAMES * MIC_FRAME_SAMPLES) {
+                s_replay_active = false;
+                t0 = esp_timer_get_time();
+                linx_send_listen("stop", "auto");
+                capture_trace_stage("listen", t0);
+            }
+            continue;
+        }
         if (s_wake_listen) {
             /* wake-triggered auto round: stream to linx until the platform
-             * answers (tts) or the safety timeout fires */
-            if (!linx_client_is_connected() ||
-                xTaskGetTickCount() - s_wake_tick > pdMS_TO_TICKS(15000)) {
+             * answers (tts), the follow-up window closes, or the safety
+             * timeout fires. a dead socket is left to the disconnect event so
+             * the round can re-open on the next session via s_listen_pending. */
+            bool follow_expired = s_auto_chat && s_follow_until_us &&
+                                  esp_timer_get_time() > s_follow_until_us;
+            bool round_expired =
+                xTaskGetTickCount() - s_wake_tick > pdMS_TO_TICKS(15000);
+            if (!linx_client_is_connected()) {
                 s_wake_listen = false;
+                wake_word_enable(true);
+            } else if (follow_expired || round_expired) {
+                s_wake_listen = false;
+                s_auto_chat = false;
+                s_follow_until_us = 0;
                 wake_word_enable(true);
                 t0 = esp_timer_get_time();
                 linx_send_listen("stop", "auto");
@@ -521,6 +598,7 @@ static void capture_task(void *arg)
             if (!s_linx_listen_sent && linx_client_is_connected() &&
                 xTaskGetTickCount() - s_cmd_press_tick > pdMS_TO_TICKS(CMD_LISTEN_DELAY_MS)) {
                 s_linx_listen_sent = true;
+                s_cmd_opened = true;
                 t0 = esp_timer_get_time();
                 linx_send_listen("start", "manual");
                 capture_trace_stage("listen", t0);
@@ -754,7 +832,13 @@ static void on_cmd_press(void)
     if (!s_command_active) {
         s_command_active = true;
         s_linx_listen_sent = false;
-        s_cmd_offline = !linx_client_is_connected();
+        s_cmd_opened = false;
+        s_listen_pending = false;   /* the command key takes over queued intent */
+        s_cmd_replay = false;       /* buffer ownership returns to this hold */
+        if (s_replay_active) {      /* stop replay before begin() overwrites it */
+            s_replay_active = false;
+            linx_send_listen("stop", "auto");
+        }
         cmd_capture_begin();   /* keeps PCM stats for diagnostics */
     }
 }
@@ -790,7 +874,15 @@ static void on_cmd_release(void)
         return;
     }
     int samples = cmd_capture_finish();
-    if (s_cmd_offline) {
+    if (!linx_client_is_connected() && samples > 0) {
+        /* spoke while the session was down: the capture buffer still holds
+         * the command — replay it on the next session instead of dropping
+         * it (the buffer stays valid until the next capture begins) */
+        s_cmd_replay = true;
+        s_replay_until_us = esp_timer_get_time() + CMD_REPLAY_WINDOW_US;
+        ESP_LOGI(TAG, "command buffered (%d samples); replays on reconnect",
+                 samples);
+    } else if (!s_cmd_opened && !linx_client_is_connected()) {
         /* held to talk while the session was down: without a cue the
          * speaker stays silent and the press looks ignored */
         announce_offline();
@@ -1014,13 +1106,37 @@ static void on_linx_disconnected(void)
     /* platform loss does not touch the room; retry in background.
      * A pending op reply is session-scoped and undeliverable — drop it so the
      * op budget is not held by a dead session. */
+    bool chat_mid_round = s_auto_chat &&
+        (s_wake_listen || s_linx_playing || s_linx_reply_pending);
     if (s_wake_listen) {
         s_wake_listen = false;
         wake_word_enable(true);
     }
+    if (chat_mid_round) {
+        /* carry the chat to the next session: a first round re-sends the wake
+         * detect, a follow-up continuation only re-opens the listen round */
+        int64_t now = esp_timer_get_time();
+        s_listen_pending = true;
+        s_pending_detect |= (s_follow_until_us == 0);
+        s_pending_until_us = s_follow_until_us > now ? s_follow_until_us
+                                                     : now + PENDING_WAKE_US;
+    }
+    s_linx_listen_sent = false;   /* a held command key re-arms on the new session */
     s_linx_playing = false;
     s_linx_reply_pending = false;
     s_tts_window_until = esp_timer_get_time();
+    if (s_replay_active) {
+        /* the replaying round died with the session; requeue the buffer so
+         * the next hello retries it while it is still inside the window */
+        s_replay_active = false;
+        if (esp_timer_get_time() < s_replay_until_us) {
+            s_cmd_replay = true;
+        }
+    }
+    if (++s_linx_reconnect_fails >= 3) {
+        /* repeated dead cycles: the cached token is a suspect — refetch ota */
+        s_ota_valid = false;
+    }
     update_linx_gate();
     if (s_mcp_op.active && !s_mcp_op.from_ctrl) {
         /* linx-scoped reply is undeliverable; ctrl ops still owe the server a
@@ -1030,8 +1146,20 @@ static void on_linx_disconnected(void)
         mcp_op_cancel_timer();
     }
     if (wifi_sta_is_connected() && s_linx_started) {
-        schedule_linx_reconnect(5000);
+        /* the platform closes idle sessions routinely — keep the dead window
+         * short so a command key press soon after a reply still lands */
+        schedule_linx_reconnect(800);
     }
+}
+
+static void on_linx_goodbye(void)
+{
+    /* the platform's goodbye is followed by a farewell TTS and a FIN; drop
+     * the socket now so the farewell never reaches the speaker, then reuse
+     * the disconnect path for cleanup + fast reconnect */
+    ESP_LOGI(TAG, "platform ended session; cycling");
+    linx_client_disconnect();
+    on_linx_disconnected();
 }
 
 static void on_linx_tools_listed(void)
@@ -1045,24 +1173,41 @@ static void on_linx_tools_listed(void)
 #endif
 }
 
+/* open an auto-mode listen round: detect=first wake (the platform answers
+ * the wake text itself); follow-up continuations stream without re-injecting
+ * the wake text or the greeting would loop. */
+static void open_auto_listen(bool detect)
+{
+    s_wake_listen = true;
+    s_wake_tick = xTaskGetTickCount();
+    if (detect) {
+        linx_send_detect_text("你好小智");
+    }
+    linx_send_listen("start", "auto");
+    open_tts_window();          /* the agent reply belongs to this round */
+}
+
 static void on_wake(void)
 {
-    if (s_wake_listen || s_command_active) {
+    if (s_wake_listen || s_command_active || s_replay_active) {
         wake_word_enable(true);
         return;
     }
+    s_auto_chat = true;
+    s_follow_until_us = 0;
     if (!linx_client_is_connected()) {
-        ESP_LOGW(TAG, "wake with linx session down");
+        /* idle sessions get closed by the platform all the time; queue the
+         * wake so it fires on hello instead of telling the user to retry.
+         * the deadline check lives in housekeeping. */
+        ESP_LOGW(TAG, "wake with linx session down; pending");
+        s_listen_pending = true;
+        s_pending_detect = true;
+        s_pending_until_us = esp_timer_get_time() + PENDING_WAKE_US;
         wake_word_enable(true);
-        announce_offline();
         return;
     }
     ESP_LOGI(TAG, "wake -> linx listen round");
-    s_wake_listen = true;
-    s_wake_tick = xTaskGetTickCount();
-    linx_send_detect_text("你好小智");
-    linx_send_listen("start", "auto");
-    open_tts_window();          /* the agent reply belongs to this round */
+    open_auto_listen(true);
 }
 
 static void on_linx_tts(app_event_t *ev)
@@ -1079,6 +1224,7 @@ static void on_linx_tts(app_event_t *ev)
         }
         s_linx_playing = true;
         s_tts_started_us = esp_timer_get_time();
+        s_replay_active = false;   /* a reply supersedes any replay in flight */
         if (s_wake_listen) {
             /* the platform answered the wake round; stop streaming */
             s_wake_listen = false;
@@ -1097,6 +1243,25 @@ static void on_linx_tts(app_event_t *ev)
             s_tts_window_until = esp_timer_get_time();
         }
         update_linx_gate();
+        /* wake-started chats stay open in linx mode: re-arm an auto listen
+         * window so a follow-up question goes straight through. in a room the
+         * agent channel stays strictly on-demand (wake/boot per round). */
+        if (s_auto_chat) {
+            if (!in_intercom() && !s_command_active) {
+                s_follow_until_us = esp_timer_get_time() +
+                                    (int64_t)FOLLOWUP_WINDOW_MS * 1000;
+                if (linx_client_is_connected()) {
+                    open_auto_listen(false);
+                } else {
+                    s_listen_pending = true;
+                    s_pending_detect = false;
+                    s_pending_until_us = s_follow_until_us;
+                }
+            } else {
+                s_auto_chat = false;
+                s_follow_until_us = 0;
+            }
+        }
     }
 }
 
@@ -1124,6 +1289,22 @@ static void on_op_timeout(void)
  * frames flowing keep it alive (see tts_watchdog.h). */
 static void housekeeping(void)
 {
+    if (s_listen_pending && esp_timer_get_time() > s_pending_until_us) {
+        /* the reconnect never came in time: a queued wake still deserves the
+         * offline cue, a lost follow-up window just ends the chat */
+        bool was_wake = s_pending_detect;
+        s_listen_pending = false;
+        s_auto_chat = false;
+        s_follow_until_us = 0;
+        if (was_wake) {
+            announce_offline();
+        }
+    }
+    if (s_cmd_replay && esp_timer_get_time() > s_replay_until_us) {
+        /* the buffered command never got a session: tell the user */
+        s_cmd_replay = false;
+        announce_offline();
+    }
     if (!s_linx_playing) {
         return;
     }
@@ -1222,14 +1403,37 @@ static void app_task(void *arg)
             break;
         case APP_EV_LINX_CONNECTED:    on_linx_connected(); break;
         case APP_EV_LINX_DISCONNECTED: on_linx_disconnected(); break;
+        case APP_EV_LINX_GOODBYE:      on_linx_goodbye(); break;
         case APP_EV_LINX_HELLO:
             ESP_LOGI(TAG, "linx session up");
+            s_linx_reconnect_fails = 0;
+            if (s_cmd_replay) {
+                /* the user spoke into a dead session: the capture buffer
+                 * still holds the command — stream it on this fresh session.
+                 * supersedes a queued wake intent (the press is newer). */
+                s_cmd_replay = false;
+                s_listen_pending = false;
+                s_replay_pos = 0;
+                s_replay_active = cmd_capture_samples() > 0;
+                if (s_replay_active) {
+                    ESP_LOGI(TAG, "replaying buffered command (%d samples)",
+                             cmd_capture_samples());
+                    linx_send_listen("start", "auto");
+                    open_tts_window();   /* the agent reply belongs to this round */
+                }
+            } else if (s_listen_pending) {
+                /* queued wake/follow-up: open the round on the fresh session */
+                bool detect = s_pending_detect;
+                s_listen_pending = false;
+                open_auto_listen(detect);
+            }
             break;
         case APP_EV_LINX_TOOLS_LISTED: on_linx_tools_listed(); break;
         case APP_EV_LINX_TTS:          on_linx_tts(&ev); break;
         case APP_EV_LINX_ABORT:
             s_linx_playing = false;
             s_linx_reply_pending = false;
+            s_replay_active = false;
             s_tts_window_until = esp_timer_get_time();
             if (s_wake_listen) {
                 s_wake_listen = false;

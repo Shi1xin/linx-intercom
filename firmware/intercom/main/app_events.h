@@ -45,6 +45,7 @@ typedef enum {
     APP_EV_LINX_TOOLS_LISTED, /* platform finished MCP discovery */
     APP_EV_LINX_TTS,          /* flag = tts start(true)/stop(false) */
     APP_EV_LINX_ABORT,
+    APP_EV_LINX_GOODBYE,      /* platform is ending the session (farewell+FIN) */
     APP_EV_MCP_CALL,          /* msg = packed json {"id":..,"name":..,"arguments":..} */
     APP_EV_LINX_RECONNECT_TIMER,
     APP_EV_OP_TIMEOUT,        /* pending room op watchdog */

@@ -28,6 +28,7 @@ static esp_websocket_client_handle_t s_ws;
 static SemaphoreHandle_t s_tx_lock;
 static volatile bool s_connected;
 static volatile bool s_play_gate = true;   /* default linx mode plays TTS */
+static volatile bool s_closing;            /* goodbye seen: drop farewell audio */
 static volatile int64_t s_last_tts_frame_us;
 
 static char  *s_rx_buf;
@@ -331,7 +332,7 @@ static void handle_text(const char *data, int len)
         /* xiaozhi sends start -> sentence_start* -> audio -> stop: treat
          * sentence_start as "still playing" so the window stays open.
          * malformed frames (missing/non-string state) are ignored. */
-        if (cJSON_IsString(st)) {
+        if (cJSON_IsString(st) && !s_closing) {
             ESP_LOGI(TAG, "linx tts state=%s", st->valuestring);
             bool start = strcmp(st->valuestring, "start") == 0;
             app_post(APP_EV_LINX_TTS, NULL, NULL, 0,
@@ -341,6 +342,8 @@ static void handle_text(const char *data, int len)
         app_post(APP_EV_LINX_ABORT, NULL, NULL, 0, false);
     } else if (strcmp(t, "goodbye") == 0) {
         ESP_LOGI(TAG, "platform closed session (goodbye)");
+        s_closing = true;
+        app_post(APP_EV_LINX_GOODBYE, NULL, NULL, 0, false);
     } else if (strcmp(t, "stt") == 0 || strcmp(t, "llm") == 0 ||
                strcmp(t, "listen") == 0) {
         ESP_LOGI(TAG, "%s", t);
@@ -359,6 +362,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "linx ws connected");
         s_connected = true;
+        s_closing = false;
         s_rx_len = 0;
         s_session_id[0] = 0;
         app_post(APP_EV_LINX_CONNECTED, NULL, NULL, 0, false);
@@ -366,11 +370,16 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "linx ws disconnected");
         s_connected = false;
+        s_closing = false;
         app_post(APP_EV_LINX_DISCONNECTED, NULL, NULL, 0, false);
         break;
     case WEBSOCKET_EVENT_DATA:
         if (e->op_code == 0x2) {
-            /* binary = platform TTS opus frame */
+            /* binary = platform TTS opus frame; a closing session's farewell
+             * is dropped entirely (the app disconnects on goodbye anyway) */
+            if (s_closing) {
+                break;
+            }
             static int s_tts_frames;
             s_last_tts_frame_us = esp_timer_get_time();
             if (++s_tts_frames == 1 || s_tts_frames % 50 == 0) {
@@ -457,7 +466,7 @@ esp_err_t linx_client_connect(const char *url, const char *token,
         .headers = hdr_block,
         .buffer_size = 4096,
         .disable_auto_reconnect = true,
-        .network_timeout_ms = 15000,
+        .network_timeout_ms = 8000,
         .ping_interval_sec = 25,
         .task_stack = 8192,
         .task_prio = 8,

@@ -63,6 +63,22 @@ static volatile bool s_wake_listen;
 static volatile bool s_command_active;
 static int64_t s_tts_window_until;
 static int64_t s_tts_started_us;
+#define FOLLOWUP_WINDOW_MS 12000
+static bool s_auto_chat;
+static int64_t s_follow_until_us;
+static bool s_listen_pending;
+static bool s_pending_detect;
+static int64_t s_pending_until_us;
+static bool s_replay_active;
+static bool g_linx_connected;
+static int g_open_calls;
+static bool linx_client_is_connected(void) { return g_linx_connected; }
+static void open_auto_listen(bool detect)
+{
+    (void)detect;
+    g_open_calls++;
+    s_wake_listen = true;
+}
 """
 
 FIXTURE_HARNESS = r"""
@@ -74,6 +90,10 @@ static void reset(void)
     s_linx_playing = false; s_linx_reply_pending = false;
     s_wake_listen = false; s_command_active = false;
     s_tts_window_until = 0; s_tts_started_us = 0;
+    s_auto_chat = false; s_follow_until_us = 0;
+    s_listen_pending = false; s_pending_detect = false; s_pending_until_us = 0;
+    s_replay_active = false;
+    g_linx_connected = true; g_open_calls = 0;
 }
 static void check(const char *name, bool cond)
 {
@@ -144,6 +164,30 @@ int main(void)
     check("case9 armed still room", last_src() == AUDIO_SRC_ROOM);
     tts(1);
     check("case9 new reply plays", last_gate() == 1 && last_src() == AUDIO_SRC_LINX);
+
+    /* 10. wake chat in linx mode: tts stop re-arms a follow-up listen round */
+    reset(); g_intercom = false; s_auto_chat = true;
+    open_tts_window(); tts(1); tts(0);
+    check("case10 followup opens", g_open_calls == 1 && s_wake_listen == true);
+    check("case10 window armed",
+          s_follow_until_us == g_now_us + (int64_t)FOLLOWUP_WINDOW_MS * 1000);
+
+    /* 11. the same chat inside a room does not re-arm */
+    reset(); g_intercom = true; s_auto_chat = true;
+    open_tts_window(); tts(1); tts(0);
+    check("case11 room no rearm", g_open_calls == 0 && s_auto_chat == false);
+
+    /* 12. follow-up while the socket is down queues a pending round */
+    reset(); g_intercom = false; g_linx_connected = false; s_auto_chat = true;
+    open_tts_window(); tts(1); tts(0);
+    check("case12 pending queued",
+          s_listen_pending == true && s_pending_detect == false);
+    check("case12 no open", g_open_calls == 0);
+
+    /* 13. tts start stops a buffered command replay in flight */
+    reset(); g_intercom = false; s_replay_active = true;
+    open_tts_window(); tts(1);
+    check("case13 replay stopped", s_replay_active == false);
 
     if (g_fails == 0) { printf("ALL PASS\n"); }
     return g_fails;
