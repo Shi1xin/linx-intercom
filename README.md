@@ -62,6 +62,8 @@ cd server && go build -o bin/intercom-server ./cmd/intercom-server && cd ..
 
 浏览器端 `http://<server>:8090/?dev=<MAC>`。固件：`cd firmware/intercom && idf.py -p <port> build flash`。配置、部署与免硬件复现见 [使用说明](docs/usage.md)
 
+灵矽侧接入：设备侧 `self.intercom.*` 随会话 hello 的 `features.mcp` 声明自动开放，平台无需配置。云端 `intercom.*` 在灵矽控制台新建 SSE 类型 MCP（地址 `https://<灵矽平台>/v1/mcpproxy/mcp`，请求头 `X-MCP-Token: <token>`），再用同一 token 运行 `mcpbridge -endpoint 'wss://<灵矽平台>/v1/mcpproxy/connect?token=<token>' -server http://<server>:8090 -target <设备MAC> -admin-token <secret>` 连出注册，最后把该 MCP 挂到要接管设备的智能体上
+
 测试：
 
 ```bash
