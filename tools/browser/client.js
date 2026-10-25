@@ -114,7 +114,10 @@ async function pollDeviceState() {
     const r = await fetch(`http://${$("server").value}/state?device_id=${encodeURIComponent(id)}`);
     const s = await r.json();
     if (!s.connected) { $("devState").textContent = `${id} 离线`; return; }
-    const room = s.room ? `${s.room.name}（${s.room.invite_code}，在线${s.room.online_count}）` : "—";
+    // invite_code 只对带管理员令牌的 /state 请求返回；缺省时面板照常显示其余字段
+    const room = s.room
+      ? `${s.room.name}（${s.room.invite_code ? `邀请码 ${s.room.invite_code}，` : ""}在线${s.room.online_count}）`
+      : "—";
     $("devState").textContent = `${s.mode === "intercom" ? "对讲" : "灵矽"} · ${room} · ${s.muted ? "已静音" : "未静音"}`;
   } catch (e) {
     $("devState").textContent = "查询失败";

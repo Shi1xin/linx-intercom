@@ -11,20 +11,6 @@ services:
     restart: unless-stopped
     command: ["/usr/local/bin/janus"]
 
-  coturn:
-    image: coturn/coturn:latest
-    network_mode: host
-    restart: unless-stopped
-    command:
-      - "-n"
-      - "--log-file=stdout"
-      - "--listening-port=3478"
-      - "--realm=intercom"
-      - "--user=${TURN_USER:-intercom}:${TURN_PASS:?set TURN_PASS}"
-      - "--min-port=49160"
-      - "--max-port=49200"
-      - "--external-ip=${PUBLIC_IP:?set PUBLIC_IP to the host LAN/public IP}"
-      - "--no-tls"
-      - "--no-dtls"
-      - "--verbose"
-    profiles: ["turn"]
+  # coturn 移至 docker-compose.turn.yml：默认不带 TURN 参数也能解析/启动 Janus；
+  # 需要中继时叠加该文件，此时 TURN_PASS / PUBLIC_IP 为必填。
+

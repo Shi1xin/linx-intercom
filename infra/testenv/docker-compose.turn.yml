@@ -1,0 +1,23 @@
+# 灵矽同频测试环境 — TURN 中继（可选叠加文件）
+# 仅当测试机与被测端不在同一 LAN、需要中继媒体时才启用：
+#   TURN_PASS=... PUBLIC_IP=<本机对外 IP> \
+#   docker compose -f docker-compose.yml -f docker-compose.turn.yml up -d
+# 单独使用 docker-compose.yml 只会启动 Janus，不需要 TURN_* / PUBLIC_IP。
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--listening-port=3478"
+      - "--realm=intercom"
+      - "--user=${TURN_USER:-intercom}:${TURN_PASS:?set TURN_PASS}"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--external-ip=${PUBLIC_IP:?set PUBLIC_IP to the host LAN/public IP}"
+      - "--no-tls"
+      - "--no-dtls"
+      - "--verbose"

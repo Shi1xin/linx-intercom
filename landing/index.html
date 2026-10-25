@@ -67,6 +67,10 @@ h1,h2,h3{font-weight:300;letter-spacing:-.035em;line-height:1.05}
 .hero-half.l{left:var(--mx);text-align:left}
 .hero-half.r{right:var(--mx);text-align:right}
 .hero-half em{font-style:normal;color:var(--accent)}
+@media(max-width:1020px){
+  .hero-half.l{top:15%;transform:none}
+  .hero-half.r{top:calc(15% + 1.4em);left:var(--mx);right:auto;transform:none;text-align:left}
+}
 .reel{position:absolute;left:50%;top:0;transform:translateX(-50%);width:35vw;height:100vh;
   display:flex;flex-direction:column;justify-content:flex-start;gap:24px;pointer-events:none}
 .reel .frame{width:100%;aspect-ratio:16/9;flex:none;border-radius:var(--r);overflow:hidden;
@@ -77,8 +81,6 @@ h1,h2,h3{font-weight:300;letter-spacing:-.035em;line-height:1.05}
 @media(max-width:820px){
   .hero{height:240vh}
   .hero-half{font-size:9vw}
-  .hero-half.l{top:18%;transform:none}
-  .hero-half.r{top:auto;bottom:14%;transform:none}
   .reel{width:calc(100vw - 32px)}
   .reel .frame{aspect-ratio:4/3}
   .hero-sub{left:16px;right:16px;bottom:26px;font-size:18px;max-width:60ch}
@@ -288,10 +290,10 @@ footer{padding:8px}
       <div class="frame">
         <div data-ui style="height:100%">
           <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
-            <span style="margin-left:6px">live session · 98:a3:16:cd:05:ac</span></div>
+            <span style="margin-left:6px">协议踪迹 · esp32s3-01</span></div>
           <div class="trace" id="trace">
             <div class="stream" id="traceStream"></div>
-            <div class="foot" id="traceFoot">replay 一段真实会话</div>
+            <div class="foot" id="traceFoot">真实协议消息 · 逐条重放</div>
             <button class="replay" id="replay">重放</button>
           </div>
         </div>
@@ -300,7 +302,7 @@ footer{padding:8px}
         <div data-ui class="kv" style="height:100%">
           <div class="bar"><span class="dot on"></span><span class="dot"></span><span class="dot"></span>
             <span style="margin-left:6px">/state · 设备面板</span></div>
-          <div class="row"><span class="k">device</span><span class="v">98:a3:16:cd:05:ac</span></div>
+          <div class="row"><span class="k">device</span><span class="v">esp32s3-01</span></div>
           <div class="row"><span class="k">mode</span><span class="v">intercom</span></div>
           <div class="row"><span class="k">room</span><span class="v">三号房 · id 3</span></div>
           <div class="row"><span class="k">invite</span><span class="v">3 1 4 1 5 9</span></div>
@@ -501,7 +503,7 @@ footer{padding:8px}
     <div class="tile name"><div><b>Go 1.26</b><small>控制服务 · SQLite 持久化</small></div></div>
     <div class="tile name"><div><b>Janus</b><small>AudioBridge 服务端混音</small></div></div>
     <div class="tile name"><div><b>WebRTC · Opus</b><small>全双工 · TURN 中继</small></div></div>
-    <div class="tile name"><div><b>58 项测试</b><small>Go 16 · Node 4 · 固件桩 38</small></div></div>
+    <div class="tile name"><div><b>60 项测试</b><small>Go 17 · Node 5 · 固件 38</small></div></div>
     <div class="tile name"><div><b>8/8 轮验收</b><small>真实智能体会话与状态一致</small></div></div>
   </div>
 </section>
@@ -582,7 +584,7 @@ function playTrace(){
   STEPS.forEach(s=>{ rows.push({lane:s.lane}); s.msgs.forEach(m=>rows.push({msg:m})); });
   let i = 0;
   const tick = ()=>{
-    if(i >= rows.length){ foot.textContent = "会话完成 · 点击重放"; return; }
+    if(i >= rows.length){ foot.textContent = "会话完成"; return; }
     const r = rows[i++];
     const el = document.createElement('div');
     if(r.lane){ el.className = 'lane'; el.textContent = r.lane; }

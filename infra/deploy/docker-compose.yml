@@ -41,9 +41,10 @@ services:
       DB_PATH: "/data/intercom.db"
       DEVICE_TOKEN: "${DEVICE_TOKEN:?set DEVICE_TOKEN}"
       ADMIN_TOKEN: "${ADMIN_TOKEN:?set ADMIN_TOKEN}"
-      # 云端 MCP 端点需要显式令牌；MCP=0 可整体关闭该入口
+      # 云端 MCP：MCP=1（默认）时设 MCP_TOKEN 作为共享密钥；留空端点开放，
+      # 服务启动打印告警。MCP=0 关闭入口后可不设。
       MCP: "${MCP:-1}"
-      MCP_TOKEN: "${MCP_TOKEN:?set MCP_TOKEN or MCP=0}"
+      MCP_TOKEN: "${MCP_TOKEN:-}"
       MCP_TARGET: "${MCP_TARGET:-}"
     volumes:
       - intercom-data:/data

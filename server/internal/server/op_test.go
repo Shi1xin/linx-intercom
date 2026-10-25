@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -322,6 +323,79 @@ func TestHelloCannotRotateToken(t *testing.T) {
 	c3.send(InMessage{Type: "hello", DeviceID: "dev-tok", Token: "good", RequestID: "h1"})
 	if h3 := c3.recv(); !h3.OK {
 		t.Fatalf("owner hello rejected: %+v", h3)
+	}
+}
+
+// Regression for the concurrent first-hello gap: several distinct tokens
+// racing to register one new device_id all read "no stored device" before
+// any insert lands. Auth must follow the credential that actually landed —
+// only the winning token may be accepted.
+func TestHelloConcurrentFirstRegistration(t *testing.T) {
+	srv, _, url := testServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	// hold the write lock so all hellos observe "no device" and then queue
+	// on the insert; COMMIT releases them into a real race
+	lock, err := srv.store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err = lock.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.ExecContext(context.Background(), "ROLLBACK")
+
+	const n = 8
+	conns := make([]*websocket.Conn, n)
+	for i := range conns {
+		c, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns[i] = c
+		defer c.CloseNow()
+		b, _ := json.Marshal(InMessage{Type: "hello", RequestID: "h",
+			DeviceID: "dev-race", Token: fmt.Sprintf("token-%d", i)})
+		if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.store.db.Stats().InUse < n+1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.store.db.Stats().InUse < n+1 {
+		t.Fatalf("could not stage concurrent inserts: %+v", srv.store.db.Stats())
+	}
+	if _, err = lock.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+
+	accepted := 0
+	for _, c := range conns {
+		_, b, err := c.Read(ctx)
+		if err != nil {
+			continue // auth-failed connections close
+		}
+		var out OutMessage
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Type == "hello_result" && out.OK {
+			accepted++
+		}
+	}
+	dev, err := srv.store.GetDevice(context.Background(), "dev-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev == nil || dev.Token == "" {
+		t.Fatalf("no credential stored: %+v", dev)
+	}
+	if accepted != 1 {
+		t.Fatalf("distinct credentials accepted for one device: %d (stored %q)", accepted, dev.Token)
 	}
 }
 

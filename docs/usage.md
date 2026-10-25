@@ -32,6 +32,10 @@
 
 真麦克风需要安全上下文：`http://localhost:8090/`（SSH 隧道）或 HTTPS。直连局域网地址时浏览器不提供 `mediaDevices`，页面会给出中文错误提示；勾「用正弦波代替麦克风」只验证信令链路。
 
+```bash
+ssh -L 8090:localhost:8090 <server-host>   # 之后本机打开 http://localhost:8090/
+```
+
 只读状态接口：`GET /state?device_id=<MAC>` 返回在线设备的模式、房间、在线人数与静音态；邀请码字段仅在携带匹配的 `X-Admin-Token` 头时返回。
 
 ## 开发者
@@ -107,24 +111,33 @@ idf.py -p <串口> build flash monitor
 | browser | `tools/browser/index.html`，`?dev=` 监视设备；`node --test tools/browser/client.test.mjs` 跑协议回归 |
 | gen_clips | `python3 tools/announce/gen_clips.py` 重新生成 `firmware/intercom/main/announce_clips.h`（macOS `say` + opusenc） |
 
-注入式测试路径：平台 `SELFTEST_TEXT` 文本注入覆盖语音链路；`/admin/op` 覆盖 NFC/云端接管路径；`softdev -script` 覆盖设备智能体会话。三者分别落在真实执行代码上，可在无硬件、无语音环境下回归。
+注入式测试路径：平台 `SELFTEST_TEXT` 文本注入覆盖平台智能体、工具协议与 TTS 下行；`/admin/op` 覆盖 NFC/云端接管路径；`softdev -script` 覆盖设备智能体会话。三者分别落在真实执行代码上，可在无硬件、无语音环境下回归；真机麦克风采集、唤醒词检测与通话听感属人工验收项。
 
 ### 测试命令
 
 ```bash
-cd server && go test ./internal/server/...          # 控制服务
-node --test tools/browser/client.test.mjs          # 浏览器端协议回归
-cd firmware/intercom && python3 -m unittest discover tests  # 固件宿主测试（真实 C 桩）
+(cd server && go test ./internal/server/...)                # 控制服务
+node --test tools/browser/client.test.mjs                  # 浏览器端协议回归
+(cd firmware/intercom && python3 -m unittest discover tests)  # 固件宿主测试（逻辑桩 + 源码守卫）
 ```
 
 ## 演示脚本
 
-当前演示环境（本机局域网）：控制服务 `http://<server>:8090`，设备经 `?dev=<MAC>` 面板监视。
+房间邀请码由服务端在建房时生成，随环境变化。获取当前房间与邀请码：
 
-| 房间 | 邀请码 |
-| --- | --- |
-| 一号房 | 723827 |
-| 二号房 | 468911 |
-| 三号房 | 286509 |
+```bash
+curl -H "X-Admin-Token: <admin-token>" http://<server>:8090/admin/rooms
+# {"ok":true,"rooms":[{"name":"一号房","invite_code":"…", …}]}
+```
 
-推荐演示顺序：唤醒词或按住命令键自我介绍 → 「加入对讲房间，邀请码四六八九一一」→ 查询房间 → 双击静音再恢复 → 「切换到三号房」→ 从第二端或云端接管切回 → 「退出对讲房间」。云端接管：`POST /admin/op` 下投 `{"op":"join","arg":"468911"}`，设备本地播报房间名；或在另一灵矽会话中调用 `intercom.*` 工具。
+或直接对设备说「房间邀请码是什么」，智能体会播报当前房间码。
+
+推荐演示顺序：唤醒词或按住命令键自我介绍 → 「加入对讲房间，邀请码 + 逐位数字」→ 查询房间 → 双击静音再恢复 → 「切换到 + 房间名」→ 从第二端或云端接管切回 → 「退出对讲房间」。云端接管示例：
+
+```bash
+curl -X POST -H "X-Admin-Token: <admin-token>" -H "Content-Type: application/json" \
+  -d '{"device_id":"<设备MAC>","op":"join","arg":"<邀请码>"}' \
+  http://<server>:8090/admin/op
+```
+
+设备收到下投操作后本地播报房间名；也可以在另一灵矽会话中调用 `intercom.*` 工具完成同样的接管。

@@ -4,13 +4,14 @@
 
 ## 系统架构
 
-设备固件基于 [ESP-IDF](https://github.com/espressif/esp-idf) 和 [ESP-WebRTC](https://github.com/espressif/esp-webrtc-solution)，完成音频处理、实时通信、NFC 读取和语音控制。房间控制服务使用 Go，SQLite 保存设备、标签和房间关系
+设备固件基于 [ESP-IDF](https://github.com/espressif/esp-idf) 和 [ESP-WebRTC](https://github.com/espressif/esp-webrtc-solution)，完成音频处理、实时通信和语音控制。NFC 走软件入口：服务端解析预登记标签并下发 `op:nfc`，固件经同一房间操作执行链入房，物理读卡器在展望。房间控制服务使用 Go，SQLite 保存设备、标签和房间关系
 
 音频服务采用 [Janus AudioBridge](https://janus.conf.meetecho.com/docs/audiobridge.html)，在服务器端混合成员声音。每个终端通过一个 WebRTC PeerConnection 上传自己的音频，接收其他成员的混合音频，支持同时发话和收听
 
 ```mermaid
 flowchart TB
-    N["NFC 标签"] --> D["设备固件<br/>音频处理 / 语音控制 / 会话管理"]
+    N["NFC 入口（op:nfc 注入）"] --> C["房间控制服务"]
+    D["设备固件<br/>音频处理 / 语音控制 / 会话管理"]
     D <-->|WSS 控制消息| C["房间控制服务"]
     D <-->|WSS 灵矽会话 · MCP 工具 · TTS| P["灵矽平台<br/>ASR / 智能体 / TTS"]
     C <--> S["SQLite"]
@@ -89,7 +90,7 @@ sequenceDiagram
     participant C as 控制服务
     participant P as 目标设备
     participant J as AudioBridge
-    U->>D: 触碰 NFC 标签或说出加入命令
+    U->>D: NFC 入口注入或说出加入命令
     D->>C: 加入请求（入口或语音目标、请求 ID）
     alt 房间标签
         C->>J: 创建或恢复对应房间
@@ -158,7 +159,7 @@ sequenceDiagram
     participant D as 设备
     participant C as 控制服务
     participant J as AudioBridge
-    U->>D: 按住命令键说出加入或切房命令，或触碰 NFC
+    U->>D: 按住命令键说出加入或切房命令，或 NFC 入口注入
     D->>D: 暂停麦克风上行
     D->>C: 切房请求（目标、请求 ID）
     C->>C: 解析目标房间

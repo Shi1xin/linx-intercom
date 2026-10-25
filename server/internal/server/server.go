@@ -410,6 +410,13 @@ func (s *ControlServer) onHello(ctx context.Context, sess *Session, m *InMessage
 		sess.send(errOut(m.RequestID, "internal", err.Error()))
 		return
 	}
+	// authoritative check against the row that actually landed: a racing
+	// first hello may have observed no stored device above, then lost the
+	// insert — its token must still match the winning credential
+	if dev == nil || dev.Token != m.Token {
+		s.failHello(sess, m, "auth_failed", "device token mismatch")
+		return
+	}
 	s.mu.Lock()
 	sess.mu.Lock()
 	if sess.deviceID != "" && sess.deviceID != m.DeviceID {
