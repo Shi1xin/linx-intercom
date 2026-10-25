@@ -143,6 +143,8 @@ function onMsg(m) {
         currentRoom = m.room;
         updateRoomPanel();
         lastAction(`已进入 ${m.room.name}`);
+        /* demo 模式入房即复位静音：持久化的 muted=true 会让 Janus 丢弃上行 */
+        if (DEMO && muted) send({ type: "set_mute", request_id: req("m"), muted: false });
       } else {
         lastAction(`确认失败 ${m.error?.code || ""}`);
       }
