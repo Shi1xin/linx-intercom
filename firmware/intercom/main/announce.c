@@ -124,23 +124,6 @@ static int try_named_room(int n, const char *name)
     return append_clip(n, clip_hao_fang, CLIP_HAO_FANG_FRAMES);
 }
 
-static int append_invite(int n, const char *code)
-{
-    if (code == NULL || strlen(code) != 6) {
-        return n;
-    }
-    n = append_clip(n, clip_invite, CLIP_INVITE_FRAMES);
-    n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
-    for (const char *p = code; *p; p++) {
-        if (*p < '0' || *p > '9') {
-            return n;
-        }
-        n = append_digit(n, *p - '0');
-        n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
-    }
-    return n;
-}
-
 void announce_room_entry(const char *room_name, const char *invite_code)
 {
     int n = append_clip(0, clip_chime, CLIP_CHIME_FRAMES);
@@ -150,17 +133,14 @@ void announce_room_entry(const char *room_name, const char *invite_code)
         /* "欢迎进入X号房" rendered as one sentence — no mid-phrase splice */
         n = append_clip(n, k_entry[idx[0] - 1].clip,
                         k_entry[idx[0] - 1].frames);
-    } else {
+    } else if (cnt > 0) {
+        /* multi-numeral "十一号房"+ : per-digit splice fallback */
         n = append_clip(n, clip_entered, CLIP_ENTERED_FRAMES);
         n = append_clip(n, clip_gap, CLIP_GAP_FRAMES);
-        int with_name = cnt > 0 ? try_named_room(n, room_name) : -1;
-        if (with_name > 0) {
-            n = with_name;
-        } else {
-            /* name not decomposable: "欢迎进入房间" + invite digits */
-            n = append_clip(n, clip_room, CLIP_ROOM_FRAMES);
-            n = append_invite(n, invite_code);
-        }
+        n = try_named_room(n, room_name);
+    } else {
+        /* name not decomposable: whole "欢迎进入房间" sentence */
+        n = append_clip(n, clip_welcome_room, CLIP_WELCOME_ROOM_FRAMES);
     }
     ESP_LOGI(TAG, "entry room=%s code=%s frames=%d",
              room_name ? room_name : "?", invite_code ? invite_code : "-", n);

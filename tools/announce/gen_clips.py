@@ -43,19 +43,22 @@ PHRASES = {
     "entered":  "欢迎进入",
     "room":     "房间",
     "hao_fang": "号房",
+    "welcome_room": "欢迎进入房间",
     "invite":   "邀请码",
     "left":     "已退出",
     "failed":   "操作失败",
     "offline":  "助手未连接",
 }
 
-# whole-sentence entry clips, keyed by spoken numeral index (一=1 … 十=10)
+# whole-sentence entry clips, keyed by spoken numeral index (一=1 … 十=10).
+# ASCII digits read more reliably than the Chinese numeral for this voice
+# (Serena renders standalone 二 as "饵").
 ENTRY_ROOMS = {
-    "entry1": "欢迎进入一号房", "entry2": "欢迎进入二号房",
-    "entry3": "欢迎进入三号房", "entry4": "欢迎进入四号房",
-    "entry5": "欢迎进入五号房", "entry6": "欢迎进入六号房",
-    "entry7": "欢迎进入七号房", "entry8": "欢迎进入八号房",
-    "entry9": "欢迎进入九号房", "entry10": "欢迎进入十号房",
+    "entry1": "欢迎进入1号房", "entry2": "欢迎进入2号房",
+    "entry3": "欢迎进入3号房", "entry4": "欢迎进入4号房",
+    "entry5": "欢迎进入5号房", "entry6": "欢迎进入6号房",
+    "entry7": "欢迎进入7号房", "entry8": "欢迎进入8号房",
+    "entry9": "欢迎进入9号房", "entry10": "欢迎进入10号房",
 }
 
 DIGITS = {

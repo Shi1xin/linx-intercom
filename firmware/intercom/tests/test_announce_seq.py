@@ -66,22 +66,13 @@ int main(void) {
     if (!same(played + head + CLIP_D10_FRAMES, clip_d1, CLIP_D1_FRAMES)) { puts("E6"); fails++; }
     if (!ends_with(clip_hao_fang, CLIP_HAO_FANG_FRAMES)) { puts("E7"); fails++; }
 
-    /* "客厅" -> 欢迎进入 + gap + 房间 + 邀请码 + gap + digits with gaps */
+    /* "客厅" -> whole "欢迎进入房间" sentence, no invite readout */
     played_n = 0;
     announce_room_entry("客厅", "468911");
     if (!starts_with(clip_chime, CLIP_CHIME_FRAMES)) { puts("E8"); fails++; }
-    if (!same(played + head, clip_room, CLIP_ROOM_FRAMES)) { puts("E9"); fails++; }
-    int base = head + CLIP_ROOM_FRAMES;
-    if (!same(played + base, clip_invite, CLIP_INVITE_FRAMES)) { puts("E10"); fails++; }
-    const opus_frame_t *want[6] = {clip_d4, clip_d6, clip_d8, clip_d9, clip_d1, clip_d1};
-    int want_n[6] = {CLIP_D4_FRAMES, CLIP_D6_FRAMES, CLIP_D8_FRAMES,
-                     CLIP_D9_FRAMES, CLIP_D1_FRAMES, CLIP_D1_FRAMES};
-    int off = base + CLIP_INVITE_FRAMES + CLIP_GAP_FRAMES;
-    for (int i = 0; i < 6; i++) {
-        if (!same(played + off, want[i], want_n[i])) { printf("E11 digit %d\n", i); fails++; }
-        off += want_n[i] + CLIP_GAP_FRAMES;
-    }
-    if (played_n != off) { printf("E12 n=%d want=%d\n", played_n, off); fails++; }
+    int expect_wr = CLIP_CHIME_FRAMES + CLIP_WELCOME_ROOM_FRAMES;
+    if (played_n != expect_wr) { printf("E9 n=%d want=%d\n", played_n, expect_wr); fails++; }
+    if (!ends_with(clip_welcome_room, CLIP_WELCOME_ROOM_FRAMES)) { puts("E10"); fails++; }
 
     /* ascii-digit room name "3号房" -> whole-sentence clip_entry3 */
     played_n = 0;
@@ -90,11 +81,11 @@ int main(void) {
     if (played_n != expect3) { printf("E13 n=%d want=%d\n", played_n, expect3); fails++; }
     if (!ends_with(clip_entry3, CLIP_ENTRY3_FRAMES)) { puts("E14"); fails++; }
 
-    /* NULL name -> generic room + invite readout, no crash */
+    /* NULL name -> whole "欢迎进入房间" sentence, no crash */
     played_n = 0;
     announce_room_entry(NULL, "286509");
     if (!starts_with(clip_chime, CLIP_CHIME_FRAMES)) { puts("E15"); fails++; }
-    if (!same(played + head, clip_room, CLIP_ROOM_FRAMES)) { puts("E16"); fails++; }
+    if (!ends_with(clip_welcome_room, CLIP_WELCOME_ROOM_FRAMES)) { puts("E16"); fails++; }
 
     /* leave / fail / offline cues are chime + phrase */
     played_n = 0;
