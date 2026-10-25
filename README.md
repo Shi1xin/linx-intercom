@@ -2,8 +2,7 @@
 
 [![test](https://github.com/Shi1xin/linx-intercom/actions/workflows/test.yml/badge.svg)](https://github.com/Shi1xin/linx-intercom/actions/workflows/test.yml)
 
-灵矽同频跑在灵矽智能体平台上，把一台设备的对话变成一群人的对讲  
-设备碰一碰组成房间，按住说话全队都听见
+为灵矽平台扩展群对讲能力的服务端、MCP 工具与设备固件。设备在同一条语音链路里切换两路对话——跟灵矽智能体说，跟房间全队说。
 
 主页 https://lingxiwmp.qiniu.com/intercom/
 
