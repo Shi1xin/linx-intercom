@@ -201,4 +201,16 @@ test("state panel renders a room whose invite_code is admin-gated", async () => 
   assert.doesNotMatch(text, /undefined/);
 });
 
+test("kind new sends a bare {kind:new} target, ignoring the input box", () => {
+  const c = loadClient();
+  c.el("btnConn").onclick();
+  c.ws().onopen();
+  c.el("kind").value = "new";
+  c.el("target").value = "ignored-value";
+  c.el("btnJoin").onclick();
+  const join = c.sent.at(-1);
+  assert.equal(join.type, "join");
+  assert.deepEqual(join.target, { kind: "new" });
+});
+
 function lastType(sent) { return sent.at(-1).type; }
